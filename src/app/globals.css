@@ -1,0 +1,337 @@
+/* Google Fonts - Inter + DM Sans */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   DESIGN SYSTEM: LEXAGENDA - BUFETE LEGAL
+   Headings: DM Sans | Body: Inter
+   Estilo: Liquid Glass + Professional
+   ============================================ */
+
+:root {
+  /* Colores principales */
+  --color-primary: #1E3A5F;
+  --color-primary-50: #F0F4F8;
+  --color-primary-100: #D9E2EC;
+  --color-primary-200: #BCCCDC;
+  --color-primary-300: #9FB3C8;
+  --color-primary-400: #627D98;
+  --color-primary-500: #1E3A5F;
+  --color-primary-600: #1A3355;
+  --color-primary-700: #152A46;
+  --color-primary-800: #102238;
+  --color-primary-900: #0A1929;
+
+  /* Dorado legal */
+  --color-secondary: #D4A853;
+  --color-secondary-50: #FDF8ED;
+  --color-secondary-100: #F9EDCF;
+  --color-secondary-200: #F2DBA0;
+  --color-secondary-300: #E7C570;
+  --color-secondary-400: #DCAF4A;
+  --color-secondary-500: #D4A853;
+  --color-secondary-600: #B8923F;
+  --color-secondary-700: #96762F;
+  --color-secondary-800: #745A22;
+  --color-secondary-900: #523F18;
+
+  /* Acento para CTAs */
+  --color-accent: #2563EB;
+  --color-accent-50: #EFF6FF;
+  --color-accent-100: #DBEAFE;
+  --color-accent-200: #BFDBFE;
+  --color-accent-300: #93C5FD;
+  --color-accent-400: #60A5FA;
+  --color-accent-500: #2563EB;
+  --color-accent-600: #1D4ED8;
+  --color-accent-700: #1E40AF;
+
+  /* Estados */
+  --color-success: #10B981;
+  --color-success-light: #D1FAE5;
+  --color-warning: #F59E0B;
+  --color-warning-light: #FEF3C7;
+  --color-error: #EF4444;
+  --color-error-light: #FEE2E2;
+  --color-info: #3B82F6;
+  --color-info-light: #DBEAFE;
+
+  /* Estados de citas */
+  --color-pending: #F59E0B;
+  --color-confirmed: #2563EB;
+  --color-completed: #10B981;
+  --color-paid: #8B5CF6;
+  --color-cancelled: #EF4444;
+
+  /* Superficies */
+  --color-background: #FAFBFC;
+  --color-surface: #FFFFFF;
+  --color-surface-elevated: #FFFFFF;
+  --color-foreground: #1A1A2E;
+  --color-foreground-secondary: #64748B;
+  --color-foreground-muted: #94A3B8;
+  --color-border: #E2E8F0;
+  --color-border-light: #F1F5F9;
+
+  /* Sombras */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  --shadow-glass: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+}
+
+html {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  line-height: 1.6;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--color-accent-500);
+  outline-offset: 2px;
+}
+
+::selection {
+  background-color: #1E3A5F;
+  color: white;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F1F5F9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* Tipografía para headings */
+h1, h2, h3, h4, h5, h6, .heading {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+@layer base {
+  /* Estados de citas - clases base */
+  .status-pending { color: var(--color-pending); }
+  .status-confirmed { color: var(--color-confirmed); }
+  .status-completed { color: var(--color-completed); }
+  .status-paid { color: #8B5CF6; }
+  .status-cancelled { color: var(--color-cancelled); }
+}
+
+@layer components {
+  /* Card con efecto glass */
+  .card-glass {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    box-shadow: var(--shadow-glass);
+    border-radius: 16px;
+  }
+
+  /* Card elevada */
+  .card-elevated {
+    background: var(--color-surface);
+    border-radius: 16px;
+    box-shadow: var(--shadow-md);
+    border: 1px solid var(--color-border-light);
+  }
+
+  /* Badge de estado de cita */
+  .badge-pending {
+    background-color: var(--color-warning-light);
+    color: #B45309;
+  }
+  .badge-confirmed {
+    background-color: var(--color-info-light);
+    color: #1D4ED8;
+  }
+  .badge-completed {
+    background-color: var(--color-success-light);
+    color: #047857;
+  }
+  .badge-paid {
+    background-color: #EDE9FE;
+    color: #6D28D9;
+  }
+  .badge-cancelled {
+    background-color: var(--color-error-light);
+    color: #B91C1C;
+  }
+
+  /* Sidebar navigation item */
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+  }
+  .nav-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .nav-item.active {
+    background: rgba(255, 255, 255, 0.15);
+    border-left: 3px solid var(--color-secondary);
+  }
+
+  /* Stat card */
+  .stat-card {
+    background: var(--color-surface);
+    border-radius: 16px;
+    padding: 24px;
+    border: 1px solid var(--color-border-light);
+    transition: all 0.2s ease;
+  }
+  .stat-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+  }
+
+  /* Calendar event card */
+  .calendar-event {
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .calendar-event:hover {
+    transform: scale(1.02);
+  }
+  .calendar-event.pending {
+    background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
+    border-left: 3px solid var(--color-pending);
+  }
+  .calendar-event.confirmed {
+    background: linear-gradient(135deg, #DBEAFE 0%, #BFDBFE 100%);
+    border-left: 3px solid var(--color-confirmed);
+  }
+  .calendar-event.completed {
+    background: linear-gradient(135deg, #D1FAE5 0%, #A7F3D0 100%);
+    border-left: 3px solid var(--color-completed);
+  }
+  .calendar-event.paid {
+    background: linear-gradient(135deg, #EDE9FE 0%, #DDD6FE 100%);
+    border-left: 3px solid #8B5CF6;
+  }
+  .calendar-event.cancelled {
+    background: linear-gradient(135deg, #FEE2E2 0%, #FECACA 100%);
+    border-left: 3px solid var(--color-cancelled);
+    opacity: 0.7;
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+  }
+
+  .glass-dark {
+    background: rgba(30, 58, 95, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .gold-accent {
+    position: relative;
+  }
+
+  .gold-accent::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background: linear-gradient(180deg, #D4A853 0%, #E7D5A5 100%);
+    border-radius: 2px;
+  }
+
+  .gradient-gold {
+    background: linear-gradient(135deg, #D4A853 0%, #E7C570 50%, #D4A853 100%);
+  }
+
+  .gradient-primary {
+    background: linear-gradient(135deg, #1E3A5F 0%, #2D4A6F 100%);
+  }
+
+  .text-gradient-gold {
+    background: linear-gradient(135deg, #D4A853 0%, #E7C570 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Animaciones */
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+  .animate-slide-up {
+    animation: slideUp 0.3s ease-out;
+  }
+  .animate-scale-in {
+    animation: scaleIn 0.2s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  /* Utilidades de layout */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Mobile menu slide-in animation */
+  .animate-slide-in-right {
+    animation: slideInRight 0.3s ease-out;
+  }
+  @keyframes slideInRight {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
+}
