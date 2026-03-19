@@ -6,9 +6,11 @@ const TEST_PASSWORD = '5438880'
 async function login(page: Page) {
   await page.goto('/login', { timeout: 60000 })
   await page.waitForLoadState('domcontentloaded')
-  await page.locator('#email').waitFor({ timeout: 15000 })
+  await page.locator('#email').waitFor({ state: 'visible', timeout: 15000 })
+  await page.waitForTimeout(1000)
   await page.locator('#email').fill(TEST_EMAIL)
   await page.locator('#password').fill(TEST_PASSWORD)
+  await page.waitForTimeout(500)
   await page.getByRole('button', { name: 'Iniciar Sesión' }).click()
   await page.waitForURL('**/dashboard', { timeout: 45000 })
 }

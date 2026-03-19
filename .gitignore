@@ -68,3 +68,4 @@ supabase/.branches
 supabase/.temp
 screenshots/
 test-results/
+.claude/settings.local.json

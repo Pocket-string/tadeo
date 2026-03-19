@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   startSession,
   stopSession,
@@ -10,8 +10,15 @@ import {
   getPaperDashboard,
   getStrategiesForPaper,
 } from '@/actions/paper-trading'
-import type { PaperSession, PaperTrade, PaperDashboardData, LivePrice } from '../types'
+import type { PaperSession, PaperDashboardData, LivePrice } from '../types'
 import type { MonitorReport, DivergenceAlert } from '../services/aiMonitor'
+
+const AUTO_TICK_INTERVALS = [
+  { label: '1 min', value: 60_000 },
+  { label: '5 min', value: 300_000 },
+  { label: '15 min', value: 900_000 },
+  { label: '1 hora', value: 3_600_000 },
+] as const
 
 export function PaperTradingDashboard() {
   const [sessions, setSessions] = useState<PaperSession[]>([])
@@ -23,6 +30,27 @@ export function PaperTradingDashboard() {
   const [tickLoading, setTickLoading] = useState(false)
   const [showNewSession, setShowNewSession] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Auto-tick state — persisted in localStorage so it survives hot-reload
+  const [autoTickEnabled, setAutoTickEnabled] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('autoTickEnabled') === 'true'
+  })
+  const [autoTickInterval, setAutoTickInterval] = useState(() => {
+    if (typeof window === 'undefined') return 300_000
+    return Number(localStorage.getItem('autoTickInterval')) || 300_000
+  })
+  const [lastAutoTick, setLastAutoTick] = useState<string | null>(null)
+  const [autoTickLog, setAutoTickLog] = useState<string[]>([])
+  const autoTickRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Persist auto-tick prefs
+  useEffect(() => {
+    localStorage.setItem('autoTickEnabled', String(autoTickEnabled))
+  }, [autoTickEnabled])
+  useEffect(() => {
+    localStorage.setItem('autoTickInterval', String(autoTickInterval))
+  }, [autoTickInterval])
 
   // New session form
   const [newStrategyId, setNewStrategyId] = useState('')
@@ -60,12 +88,65 @@ export function PaperTradingDashboard() {
     if (activeSession) loadDashboard(activeSession)
   }, [activeSession, loadDashboard])
 
-  // Auto-refresh price every 15 seconds for active session
+  // Auto-refresh price + session cards every 15 seconds
   useEffect(() => {
     if (!activeSession || !dashboard?.session || dashboard.session.status !== 'active') return
-    const interval = setInterval(() => loadDashboard(activeSession), 15000)
+    const interval = setInterval(() => {
+      loadDashboard(activeSession)
+      loadSessions()
+    }, 15000)
     return () => clearInterval(interval)
-  }, [activeSession, dashboard?.session?.status, loadDashboard])
+  }, [activeSession, dashboard?.session?.status, loadDashboard, loadSessions])
+
+  // Auto-tick: calls API to tick ALL active sessions
+  const executeAutoTick = useCallback(async () => {
+    try {
+      const res = await fetch('/api/paper-trading/tick-all', {
+        method: 'POST',
+        headers: { 'x-auto-tick': 'true' },
+      })
+      const data = await res.json()
+      const now = new Date().toLocaleTimeString()
+      setLastAutoTick(now)
+
+      const logEntries: string[] = []
+      if (data.results) {
+        for (const r of data.results) {
+          const tierTag = r.riskTier ? `[${r.riskTier}] ` : ''
+          const entry = `[${now}] ${tierTag}${r.symbol}: ${r.action} — ${r.reason}${r.price ? ` ($${r.price})` : ''}${r.pnl ? ` PnL: $${r.pnl.toFixed(2)}` : ''}`
+          logEntries.push(entry)
+        }
+      }
+      if (logEntries.length > 0) {
+        setAutoTickLog(prev => [...logEntries, ...prev].slice(0, 50))
+      }
+
+      // Always refresh sessions list (updates PnL on cards)
+      await loadSessions()
+      // Refresh detailed dashboard if a session is selected
+      if (activeSession) {
+        await loadDashboard(activeSession)
+      }
+    } catch (e) {
+      const msg = `[${new Date().toLocaleTimeString()}] Error: ${e instanceof Error ? e.message : 'tick failed'}`
+      setAutoTickLog(prev => [msg, ...prev].slice(0, 50))
+    }
+  }, [activeSession, loadDashboard, loadSessions])
+
+  useEffect(() => {
+    if (autoTickRef.current) {
+      clearInterval(autoTickRef.current)
+      autoTickRef.current = null
+    }
+    if (autoTickEnabled) {
+      // Execute immediately on enable
+      executeAutoTick()
+      autoTickRef.current = setInterval(executeAutoTick, autoTickInterval)
+    }
+    return () => {
+      if (autoTickRef.current) clearInterval(autoTickRef.current)
+    }
+  }, [autoTickEnabled, autoTickInterval, executeAutoTick])
 
   const handleStartSession = async () => {
     if (!newStrategyId) return
@@ -218,6 +299,63 @@ export function PaperTradingDashboard() {
         </div>
       )}
 
+      {/* Auto-Tick Panel */}
+      <div className="bg-white rounded-2xl shadow-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h3 className="font-semibold text-neutral-800">Auto-Tick</h3>
+            {autoTickEnabled && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                <span className="text-xs text-green-600 font-medium">Activo</span>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <select
+              value={autoTickInterval}
+              onChange={e => setAutoTickInterval(Number(e.target.value))}
+              className="px-2 py-1 border border-neutral-200 rounded-lg text-xs"
+              disabled={autoTickEnabled}
+            >
+              {AUTO_TICK_INTERVALS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setAutoTickEnabled(!autoTickEnabled)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+                autoTickEnabled
+                  ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                  : 'bg-green-600 text-white hover:bg-green-700'
+              }`}
+            >
+              {autoTickEnabled ? 'Detener Auto-Tick' : 'Iniciar Auto-Tick'}
+            </button>
+          </div>
+        </div>
+
+        {lastAutoTick && (
+          <p className="text-xs text-neutral-500">Último tick: {lastAutoTick}</p>
+        )}
+
+        {autoTickLog.length > 0 && (
+          <div className="bg-neutral-50 rounded-xl p-3 max-h-40 overflow-y-auto">
+            <p className="text-[10px] uppercase tracking-wider text-neutral-400 mb-1">Log</p>
+            {autoTickLog.map((log, i) => (
+              <p key={i} className={`text-xs font-mono ${
+                log.includes('buy') || log.includes('sell') ? 'text-blue-600 font-medium' :
+                log.includes('close') ? 'text-amber-600 font-medium' :
+                log.includes('Error') ? 'text-red-600' :
+                'text-neutral-500'
+              }`}>
+                {log}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Sessions List */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {sessions.map(session => (
@@ -230,7 +368,18 @@ export function PaperTradingDashboard() {
           >
             <div className="flex items-center justify-between mb-2">
               <span className="font-semibold text-neutral-800">{session.symbol}</span>
-              <StatusBadge status={session.status} />
+              <div className="flex items-center gap-1.5">
+                {session.risk_tier && (
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                    session.risk_tier === 'conservative' ? 'bg-blue-100 text-blue-700' :
+                    session.risk_tier === 'aggressive' ? 'bg-red-100 text-red-700' :
+                    'bg-amber-100 text-amber-700'
+                  }`}>
+                    {session.risk_tier === 'conservative' ? 'CONS' : session.risk_tier === 'aggressive' ? 'AGR' : 'MOD'}
+                  </span>
+                )}
+                <StatusBadge status={session.status} />
+              </div>
             </div>
             <div className="text-xs text-neutral-500 space-y-1">
               <div>Timeframe: {session.timeframe}</div>

@@ -61,8 +61,7 @@ export async function getPaperDashboard(sessionId: string): Promise<PaperDashboa
   const { data: trades } = await supabase
     .from('paper_trades')
     .select('*')
-    .eq('strategy_id', session.strategy_id)
-    .eq('user_id', user.id)
+    .eq('session_id', sessionId)
     .order('created_at', { ascending: true })
 
   const allTrades = (trades ?? []) as PaperTrade[]

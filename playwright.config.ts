@@ -40,5 +40,17 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
       timeout: 180000,
     },
+    {
+      name: 'paper-trading',
+      testMatch: /paper-trading\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+      timeout: 300000,
+    },
+    {
+      name: 'turbo',
+      testMatch: /turbo-.*\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+      timeout: 300000,
+    },
   ],
 })
