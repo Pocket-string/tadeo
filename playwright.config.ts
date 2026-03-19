@@ -31,8 +31,14 @@ export default defineConfig({
     },
     {
       name: 'workflow',
-      testMatch: /workflow\.spec\.ts|eth-.*\.spec\.ts|sol-.*\.spec\.ts/,
+      testMatch: /workflow\.spec\.ts|eth-.*\.spec\.ts|sol-.*\.spec\.ts|final-.*\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'scanner',
+      testMatch: /scanner-flow\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+      timeout: 180000,
     },
   ],
 })

@@ -15,6 +15,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: HomeIcon, roles: ['admin', 'trader'] },
+  { href: '/scanner', label: 'Scanner', icon: ScannerIcon, roles: ['admin', 'trader'] },
   { href: '/market-data', label: 'Market Data', icon: DatabaseIcon, roles: ['admin', 'trader'] },
   { href: '/strategies', label: 'Estrategias', icon: StrategyIcon, roles: ['admin', 'trader'] },
   { href: '/backtests', label: 'Backtesting', icon: ChartIcon, roles: ['admin', 'trader'] },
@@ -199,6 +200,14 @@ function LiveIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+    </svg>
+  )
+}
+
+function ScannerIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 15.803a7.5 7.5 0 0010.607 0z" />
     </svg>
   )
 }

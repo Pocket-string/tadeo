@@ -32,6 +32,32 @@ export async function createStrategy(formData: FormData) {
   if (error) throw new Error(`Failed to create strategy: ${error.message}`)
 }
 
+export async function createStrategyFromScanner(input: {
+  name: string
+  description: string
+  parameters: Record<string, number>
+}) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  const params = { ...DEFAULT_STRATEGY_PARAMS, ...input.parameters }
+
+  const { data, error } = await supabase
+    .from('strategies')
+    .insert({
+      user_id: user.id,
+      name: input.name,
+      description: `[Scanner] ${input.description}`,
+      parameters: params,
+    })
+    .select('id, name')
+    .single()
+
+  if (error) throw new Error(`Failed to create strategy: ${error.message}`)
+  return data
+}
+
 export async function getStrategies() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

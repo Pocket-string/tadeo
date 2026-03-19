@@ -1,5 +1,6 @@
 import type { StrategyParameters, SignalType } from '@/types/database'
 import type { Timeframe } from '@/features/market-data/types'
+import type { RegimeResult } from '@/features/indicators/types'
 
 export interface BacktestConfig {
   strategyId: string
@@ -40,6 +41,7 @@ export interface BacktestOutput {
   metrics: BacktestMetrics
   trades: BacktestTradeResult[]
   equityCurve: { timestamp: string; equity: number }[]
+  regime?: RegimeResult
 }
 
 // --- Scientific Backtesting (Phase 4) ---

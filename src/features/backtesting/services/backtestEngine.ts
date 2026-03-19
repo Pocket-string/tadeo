@@ -1,7 +1,7 @@
 import type { OHLCVCandle } from '@/features/market-data/types'
 import type { StrategyParameters, SignalType } from '@/types/database'
 import type { BacktestTradeResult, BacktestMetrics, BacktestOutput } from '../types'
-import { calculateEMA, calculateMACD, calculateRSI, calculateBollingerBands } from '@/features/indicators/services/indicatorEngine'
+import { calculateEMA, calculateMACD, calculateRSI, calculateBollingerBands, calculateATR, calculateADX, detectRegime } from '@/features/indicators/services/indicatorEngine'
 
 interface OpenPosition {
   type: SignalType
@@ -10,11 +10,13 @@ interface OpenPosition {
   quantity: number
   stopLoss: number
   takeProfit: number
+  trailingActivation: number // price level where trailing activates
+  trailingStop: number | null // dynamic trailing stop level
 }
 
 /**
- * Motor de backtesting.
- * Recibe candles OHLCV y parametros de estrategia, retorna metricas y trades.
+ * Motor de backtesting v2.
+ * ATR-based dynamic stops, trailing stops, regime-aware filtering.
  */
 export function runBacktest(
   candles: OHLCVCandle[],
@@ -27,14 +29,11 @@ export function runBacktest(
   const macd = calculateMACD(candles, params.macd_fast, params.macd_slow, params.macd_signal)
   const rsi = calculateRSI(candles, params.rsi_period)
   const bb = calculateBollingerBands(candles, params.bb_period, params.bb_std_dev)
+  const atr = calculateATR(candles, 14)
+  const adx = calculateADX(candles, 14)
 
-  // Alinear todos los indicadores por timestamp
-  const timestamps = new Set<string>()
-  emaFast.forEach(e => timestamps.add(e.timestamp))
-  emaSlow.forEach(e => timestamps.add(e.timestamp))
-  macd.forEach(e => timestamps.add(e.timestamp))
-  rsi.forEach(e => timestamps.add(e.timestamp))
-  bb.forEach(e => timestamps.add(e.timestamp))
+  // Detect market regime
+  const regime = detectRegime(candles, adx, atr, emaFast, emaSlow)
 
   // Crear mapas de lookup
   const emaFastMap = new Map(emaFast.map(e => [e.timestamp, e.value]))
@@ -42,6 +41,8 @@ export function runBacktest(
   const macdMap = new Map(macd.map(e => [e.timestamp, e]))
   const rsiMap = new Map(rsi.map(e => [e.timestamp, e.value]))
   const bbMap = new Map(bb.map(e => [e.timestamp, e]))
+  const atrMap = new Map(atr.map(e => [e.timestamp, e.value]))
+  const adxMap = new Map(adx.map(e => [e.timestamp, e]))
 
   const trades: BacktestTradeResult[] = []
   const equityCurve: { timestamp: string; equity: number }[] = []
@@ -50,6 +51,10 @@ export function runBacktest(
   let prevEmaFast: number | null = null
   let prevEmaSlow: number | null = null
 
+  // ATR multipliers for dynamic stops (use params SL/TP as multipliers if > 1, else as percentages)
+  const slMultiplier = params.stop_loss_pct > 1 ? params.stop_loss_pct : 1.5
+  const tpMultiplier = params.take_profit_pct > 1 ? params.take_profit_pct : 2.5
+
   for (const candle of candles) {
     const ts = candle.timestamp
     const ef = emaFastMap.get(ts)
@@ -57,6 +62,8 @@ export function runBacktest(
     const m = macdMap.get(ts)
     const r = rsiMap.get(ts)
     const b = bbMap.get(ts)
+    const currentATR = atrMap.get(ts)
+    const currentADX = adxMap.get(ts)
 
     // Solo operar cuando todos los indicadores estan disponibles
     if (ef === undefined || es === undefined || !m || r === undefined || !b) {
@@ -66,9 +73,31 @@ export function runBacktest(
       continue
     }
 
+    // Update trailing stop if position open
+    if (position && position.trailingStop !== null) {
+      if (position.type === 'buy' && candle.high > position.trailingActivation) {
+        // Price hit trailing activation — trail the stop
+        const newTrail = candle.high - (currentATR ?? (position.entryPrice * params.stop_loss_pct))
+        if (newTrail > position.trailingStop) {
+          position.trailingStop = newTrail
+          if (position.trailingStop > position.stopLoss) {
+            position.stopLoss = position.trailingStop
+          }
+        }
+      } else if (position.type === 'sell' && candle.low < position.trailingActivation) {
+        const newTrail = candle.low + (currentATR ?? (position.entryPrice * params.stop_loss_pct))
+        if (newTrail < position.trailingStop) {
+          position.trailingStop = newTrail
+          if (position.trailingStop < position.stopLoss) {
+            position.stopLoss = position.trailingStop
+          }
+        }
+      }
+    }
+
     // Verificar stop-loss y take-profit en posicion abierta
     if (position) {
-      const exitCheck = checkExit(position, candle, params)
+      const exitCheck = checkExit(position, candle)
       if (exitCheck) {
         const pnl = position.type === 'buy'
           ? (exitCheck.price - position.entryPrice) * position.quantity
@@ -94,27 +123,70 @@ export function runBacktest(
 
     // Generar senal si no hay posicion abierta
     if (!position && prevEmaFast !== null && prevEmaSlow !== null) {
-      const signal = generateSignal(
-        prevEmaFast, prevEmaSlow, ef, es, m, r, params
-      )
+      // Regime filter: skip choppy and volatile markets
+      const adxVal = currentADX?.adx ?? 0
+      const isChoppy = adxVal < 20 && adxVal > 0
+      const isVolatile = currentATR !== undefined && atr.length > 50 &&
+        currentATR > 2 * (atr.slice(-50).reduce((s, a) => s + a.value, 0) / Math.min(50, atr.length))
 
-      if (signal) {
-        const quantity = capital * 0.02 / candle.close // Risk 2% del capital (fractional for crypto)
-        if (quantity > 0 && capital * 0.02 >= 1) { // At least $1 position
-          const stopLoss = signal === 'buy'
-            ? candle.close * (1 - params.stop_loss_pct)
-            : candle.close * (1 + params.stop_loss_pct)
-          const takeProfit = signal === 'buy'
-            ? candle.close * (1 + params.take_profit_pct)
-            : candle.close * (1 - params.take_profit_pct)
+      if (!isChoppy && !isVolatile) {
+        const signal = generateSignal(
+          prevEmaFast, prevEmaSlow, ef, es, m, r, params, b, currentADX, candle.close
+        )
 
-          position = {
-            type: signal,
-            entryTime: ts,
-            entryPrice: candle.close,
-            quantity,
-            stopLoss,
-            takeProfit,
+        if (signal && currentATR !== undefined) {
+          // ATR-based position sizing: risk_amount / (ATR * sl_multiplier) = quantity
+          const riskAmount = capital * 0.02
+          const stopDistance = currentATR * slMultiplier
+          const quantity = riskAmount / stopDistance
+
+          if (quantity > 0 && riskAmount >= 1) {
+            // ATR-based dynamic stops
+            const stopLoss = signal === 'buy'
+              ? candle.close - stopDistance
+              : candle.close + stopDistance
+            const takeProfit = signal === 'buy'
+              ? candle.close + currentATR * tpMultiplier
+              : candle.close - currentATR * tpMultiplier
+
+            // Trailing stop activates at 1x ATR profit
+            const trailingActivation = signal === 'buy'
+              ? candle.close + currentATR
+              : candle.close - currentATR
+
+            position = {
+              type: signal,
+              entryTime: ts,
+              entryPrice: candle.close,
+              quantity,
+              stopLoss,
+              takeProfit,
+              trailingActivation,
+              trailingStop: signal === 'buy' ? stopLoss : stopLoss,
+            }
+          }
+        } else if (signal && currentATR === undefined) {
+          // Fallback to percentage-based stops if ATR not available
+          const riskAmount = capital * 0.02
+          const quantity = riskAmount / candle.close
+          if (quantity > 0 && riskAmount >= 1) {
+            const stopLoss = signal === 'buy'
+              ? candle.close * (1 - params.stop_loss_pct)
+              : candle.close * (1 + params.stop_loss_pct)
+            const takeProfit = signal === 'buy'
+              ? candle.close * (1 + params.take_profit_pct)
+              : candle.close * (1 - params.take_profit_pct)
+
+            position = {
+              type: signal,
+              entryTime: ts,
+              entryPrice: candle.close,
+              quantity,
+              stopLoss,
+              takeProfit,
+              trailingActivation: Infinity,
+              trailingStop: null,
+            }
           }
         }
       }
@@ -148,13 +220,15 @@ export function runBacktest(
 
   const metrics = calculateMetrics(trades, initialCapital, equityCurve)
 
-  return { metrics, trades, equityCurve }
+  return { metrics, trades, equityCurve, regime }
 }
 
 /**
- * Genera senal basada en confluencia de indicadores (scoring).
- * EMA cross es obligatorio. MACD y RSI suman confluencia.
- * Se necesita al menos 1 confirmacion adicional para entrar.
+ * Genera senal basada en multiples sistemas:
+ * 1. EMA crossover + confluencia (trend following)
+ * 2. Bollinger Band bounce + RSI extremo (mean reversion)
+ * 3. Strong trend momentum (ADX > 30 + alignment)
+ * Cada sistema opera independientemente para generar más trades.
  */
 function generateSignal(
   prevEmaFast: number,
@@ -163,8 +237,12 @@ function generateSignal(
   emaSlow: number,
   macd: { macd: number; signal: number; histogram: number },
   rsi: number,
-  params: StrategyParameters
+  params: StrategyParameters,
+  bb?: { upper: number; lower: number; middle: number; bandwidth: number },
+  adx?: { adx: number; plusDI: number; minusDI: number },
+  price?: number
 ): SignalType | null {
+  // System 1: EMA Crossover + Confluence (original)
   const emaCrossUp = prevEmaFast <= prevEmaSlow && emaFast > emaSlow
   const emaCrossDown = prevEmaFast >= prevEmaSlow && emaFast < emaSlow
 
@@ -182,6 +260,30 @@ function generateSignal(
     if (confluence >= 1) return 'sell'
   }
 
+  // System 2: Bollinger Band mean-reversion + RSI extremes
+  if (bb && price) {
+    // Buy: price touches/breaks lower BB + RSI oversold + MACD turning up
+    if (price <= bb.lower && rsi < params.rsi_oversold + 5 && macd.histogram > macd.signal * -0.5) {
+      return 'buy'
+    }
+    // Sell: price touches/breaks upper BB + RSI overbought + MACD turning down
+    if (price >= bb.upper && rsi > params.rsi_overbought - 5 && macd.histogram < macd.signal * 0.5) {
+      return 'sell'
+    }
+  }
+
+  // System 3: Strong trend continuation (no cross needed)
+  if (adx && adx.adx > 30) {
+    // Strong uptrend: EMA aligned + DI+ > DI- + RSI pullback to 40-55
+    if (emaFast > emaSlow && adx.plusDI > adx.minusDI && rsi >= 40 && rsi <= 55 && macd.histogram > 0) {
+      return 'buy'
+    }
+    // Strong downtrend: EMA aligned + DI- > DI+ + RSI pullback to 45-60
+    if (emaFast < emaSlow && adx.minusDI > adx.plusDI && rsi >= 45 && rsi <= 60 && macd.histogram < 0) {
+      return 'sell'
+    }
+  }
+
   return null
 }
 
@@ -191,7 +293,6 @@ function generateSignal(
 function checkExit(
   position: OpenPosition,
   candle: OHLCVCandle,
-  _params: StrategyParameters
 ): { price: number; reason: 'stop_loss' | 'take_profit' } | null {
   if (position.type === 'buy') {
     if (candle.low <= position.stopLoss) {

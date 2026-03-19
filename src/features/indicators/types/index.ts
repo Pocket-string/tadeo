@@ -23,6 +23,28 @@ export interface BollingerBandsResult {
   bandwidth: number
 }
 
+export interface ATRResult {
+  timestamp: string
+  value: number
+}
+
+export interface ADXResult {
+  timestamp: string
+  adx: number
+  plusDI: number
+  minusDI: number
+}
+
+export type MarketRegime = 'trending' | 'ranging' | 'volatile' | 'choppy'
+
+export interface RegimeResult {
+  regime: MarketRegime
+  adx: number
+  atrRatio: number // current ATR / avg ATR
+  emaCrossCount: number // crosses in last 20 candles
+  confidence: number // 0-1
+}
+
 export interface IndicatorConfig {
   emaFast: number
   emaSlow: number
@@ -32,6 +54,8 @@ export interface IndicatorConfig {
   macdSignal: number
   bbPeriod: number
   bbStdDev: number
+  atrPeriod: number
+  adxPeriod: number
 }
 
 export const DEFAULT_INDICATOR_CONFIG: IndicatorConfig = {
@@ -43,4 +67,6 @@ export const DEFAULT_INDICATOR_CONFIG: IndicatorConfig = {
   macdSignal: 9,
   bbPeriod: 20,
   bbStdDev: 2,
+  atrPeriod: 14,
+  adxPeriod: 14,
 }
