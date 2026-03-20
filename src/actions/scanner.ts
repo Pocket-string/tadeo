@@ -57,7 +57,7 @@ export async function getAvailableData() {
 
   // Query each known pair/timeframe individually
   const pairs = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT']
-  const timeframes = ['1h', '4h', '1d']
+  const timeframes = ['5m', '15m', '1h', '4h', '1d']
   const results: { symbol: string; timeframe: string; candleCount: number }[] = []
 
   for (const symbol of pairs) {

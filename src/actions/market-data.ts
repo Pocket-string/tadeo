@@ -24,25 +24,20 @@ export async function getMarketDataSummary(): Promise<MarketDataSummaryRow[]> {
     .rpc('get_market_data_summary')
 
   if (error) {
-    // Fallback: discover unique symbol/timeframe pairs by sampling multiple offsets
-    // Supabase default limit is 1000 rows, so we sample at different positions
-    const uniquePairs = new Map<string, { symbol: string; timeframe: string }>()
+    // Fallback: enumerate all known symbol/timeframe combos deterministically
+    const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT']
+    const timeframes = ['5m', '15m', '1h', '4h', '1d']
+    const uniquePairs: { symbol: string; timeframe: string }[] = []
 
-    for (const offset of [0, 1000, 3000, 7000, 12000]) {
-      const { data: sample } = await supabase
-        .from('ohlcv_candles')
-        .select('symbol, timeframe')
-        .range(offset, offset + 999)
-
-      if (!sample || sample.length === 0) break
-      for (const row of sample) {
-        uniquePairs.set(`${row.symbol}|${row.timeframe}`, row)
+    for (const symbol of symbols) {
+      for (const timeframe of timeframes) {
+        uniquePairs.push({ symbol, timeframe })
       }
     }
 
     // For each pair, get exact count + first/last timestamps
-    const results = await Promise.all(
-      Array.from(uniquePairs.values()).map(async ({ symbol, timeframe }) => {
+    const results = (await Promise.all(
+      uniquePairs.map(async ({ symbol, timeframe }) => {
         const [countRes, firstRes, lastRes] = await Promise.all([
           supabase
             .from('ohlcv_candles')
@@ -75,7 +70,7 @@ export async function getMarketDataSummary(): Promise<MarketDataSummaryRow[]> {
           last: lastRes.data?.timestamp ?? '',
         }
       })
-    )
+    )).filter(r => r.count > 0)
 
     return results
   }
