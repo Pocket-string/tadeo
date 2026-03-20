@@ -97,7 +97,7 @@ export async function turboSimulate(input: {
     throw new Error(`Not enough data: ${candles?.length ?? 0} candles for ${input.symbol} ${input.timeframe}`)
   }
 
-  const result = simulateOnCandles(candles as OHLCVCandle[], input.params, capital, input.symbol, input.timeframe, input.riskPerTrade)
+  const result = await simulateOnCandles(candles as OHLCVCandle[], input.params, capital, input.symbol, input.timeframe, input.riskPerTrade)
   result.duration = Math.round(performance.now() - start)
   return result
 }
@@ -106,14 +106,14 @@ export async function turboSimulate(input: {
  * Pure simulation engine — no DB calls, just computation.
  * This is the core that runs at max speed.
  */
-export function simulateOnCandles(
+export async function simulateOnCandles(
   candles: OHLCVCandle[],
   params: StrategyParameters,
   initialCapital: number,
   symbol: string,
   timeframe: string,
   riskPerTrade?: number,
-): SimResult {
+): Promise<SimResult> {
   // Calculate all indicators upfront
   const emaFast = calculateEMA(candles, params.ema_fast)
   const emaSlow = calculateEMA(candles, params.ema_slow)
@@ -419,7 +419,7 @@ function mutateParams(base: StrategyParameters): StrategyParameters {
   return result
 }
 
-export function scoreResult(r: SimResult): number {
+export async function scoreResult(r: SimResult): Promise<number> {
   const m = r.metrics
   if (m.totalTrades < 5) return -100 // Not enough trades
 
@@ -495,8 +495,8 @@ export async function optimizeStrategy(input: {
   const improvements: OptimizationResult['improvements'] = []
 
   // Start with base params
-  let bestResult = simulateOnCandles(candles as OHLCVCandle[], input.baseParams, capital, input.symbol, input.timeframe)
-  let bestScore = scoreResult(bestResult)
+  let bestResult = await simulateOnCandles(candles as OHLCVCandle[], input.baseParams, capital, input.symbol, input.timeframe)
+  let bestScore = await scoreResult(bestResult)
   allResults.push(bestResult)
 
   // Evolution loop
@@ -507,10 +507,10 @@ export async function optimizeStrategy(input: {
     }
 
     for (const params of population) {
-      const result = simulateOnCandles(candles as OHLCVCandle[], params, capital, input.symbol, input.timeframe)
+      const result = await simulateOnCandles(candles as OHLCVCandle[], params, capital, input.symbol, input.timeframe)
       allResults.push(result)
 
-      const score = scoreResult(result)
+      const score = await scoreResult(result)
       if (score > bestScore) {
         bestScore = score
         bestResult = result
@@ -530,13 +530,15 @@ export async function optimizeStrategy(input: {
     }
   }
 
+  // Score all results for sorting (async scoreResult can't be used in sort comparator)
+  const scored = await Promise.all(allResults.map(async r => ({ result: r, score: await scoreResult(r) })))
+  scored.sort((a, b) => b.score - a.score)
+
   return {
     best: bestResult,
     iterations: generations,
     explored: allResults.length,
     improvements,
-    allResults: allResults
-      .sort((a, b) => scoreResult(b) - scoreResult(a))
-      .slice(0, 10), // Top 10 only
+    allResults: scored.slice(0, 10).map(s => s.result),
   }
 }

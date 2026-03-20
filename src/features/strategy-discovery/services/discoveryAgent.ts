@@ -134,7 +134,7 @@ async function backtestAndOptimize(
   const capital = 100
 
   // Initial backtest
-  const baseResult = simulateOnCandles(
+  const baseResult = await simulateOnCandles(
     candles,
     hypothesis.baseParams,
     capital,
@@ -143,7 +143,7 @@ async function backtestAndOptimize(
     0.02
   )
 
-  const baseScore = scoreResult(baseResult)
+  const baseScore = await scoreResult(baseResult)
 
   // Quick optimization: 10 generations × 8 population (smaller than full optimizer)
   let bestResult = baseResult
@@ -153,8 +153,8 @@ async function backtestAndOptimize(
   for (let gen = 0; gen < 10; gen++) {
     for (let i = 0; i < 8; i++) {
       const mutated = quickMutate(bestParams)
-      const result = simulateOnCandles(candles, mutated, capital, symbol, timeframe, 0.02)
-      const score = scoreResult(result)
+      const result = await simulateOnCandles(candles, mutated, capital, symbol, timeframe, 0.02)
+      const score = await scoreResult(result)
 
       if (score > bestScore) {
         bestScore = score
