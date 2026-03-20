@@ -29,9 +29,9 @@ export default async function DashboardPage() {
   const greeting = getGreeting()
 
   return (
-    <div className="space-y-6">
+    <div className="p-4 md:p-6 lg:p-8 space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-foreground">
+        <h1 className="text-xl md:text-2xl font-bold text-foreground">
           {greeting}, {userName}
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -40,7 +40,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         <KPICard
           title="Simbolos"
           value={uniqueSymbols}
@@ -125,12 +125,12 @@ export default async function DashboardPage() {
           </div>
           <div className="space-y-2">
             {backtests.slice(0, 3).map((bt) => (
-              <div key={bt.id} className="flex items-center justify-between p-3 bg-background rounded-md">
+              <div key={bt.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 bg-background rounded-md">
                 <div>
                   <span className="font-medium text-foreground">{bt.symbol}</span>
                   <span className="text-muted-foreground ml-2 text-sm">{bt.timeframe}</span>
                 </div>
-                <div className="flex items-center gap-4 text-sm">
+                <div className="flex items-center flex-wrap gap-2 sm:gap-4 text-sm">
                   <span className={bt.net_profit > 0 ? 'text-green-500' : 'text-red-500'}>
                     ${Number(bt.net_profit).toFixed(2)}
                   </span>

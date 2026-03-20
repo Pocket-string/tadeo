@@ -9,9 +9,9 @@ export default async function DiscoveriesPage() {
   const rejected = proposals.filter(p => p.status === 'rejected')
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       <div className="max-w-6xl mx-auto">
-        <div className="mb-8">
+        <div className="mb-6 md:mb-8">
           <h1 className="text-3xl font-heading font-bold text-foreground">
             Strategy Discoveries
           </h1>
@@ -21,7 +21,7 @@ export default async function DiscoveriesPage() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6 md:mb-8">
           <div className="bg-surface rounded-xl p-4 border border-border">
             <p className="text-sm text-foreground/60">Pending</p>
             <p className="text-2xl font-bold text-warning-500">{pending.length}</p>

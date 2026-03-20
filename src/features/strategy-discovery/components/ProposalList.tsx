@@ -55,11 +55,11 @@ function ProposalCard({ proposal, showActions }: { proposal: ProposalRecord; sho
   }
 
   return (
-    <div className="bg-surface rounded-xl border border-border p-6">
+    <div className="bg-surface rounded-xl border border-border p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-start justify-between mb-4">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 mb-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
             <h3 className="text-lg font-semibold text-foreground">
               {proposal.symbol} / {proposal.timeframe}
             </h3>
@@ -78,7 +78,7 @@ function ProposalCard({ proposal, showActions }: { proposal: ProposalRecord; sho
       </div>
 
       {/* Metrics Grid */}
-      <div className="grid grid-cols-4 md:grid-cols-7 gap-3 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3 mb-4">
         <Metric label="Win Rate" value={`${(metrics.winRate * 100).toFixed(0)}%`}
           color={metrics.winRate > 0.55 ? 'text-success-500' : metrics.winRate > 0.45 ? 'text-warning-500' : 'text-error-500'} />
         <Metric label="PnL" value={`${(metrics.netPnlPct * 100).toFixed(1)}%`}
@@ -104,7 +104,7 @@ function ProposalCard({ proposal, showActions }: { proposal: ProposalRecord; sho
 
       {/* Actions */}
       {showActions && !result && (
-        <div className="flex gap-3 mt-4 pt-4 border-t border-border">
+        <div className="flex flex-col sm:flex-row gap-3 mt-4 pt-4 border-t border-border">
           <button
             onClick={handleApprove}
             disabled={isPending}

@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { UserRole } from '@/types/database'
+import { MobileOverlay } from './mobile-nav'
 
 interface NavItem {
   href: string
@@ -63,8 +64,8 @@ export function Sidebar() {
 
   const filteredNavItems = navItems.filter(item => item.roles.includes(userRole))
 
-  return (
-    <aside className="fixed left-0 top-0 bottom-0 w-64 bg-primary-500 text-white flex flex-col z-40">
+  const sidebarContent = (
+    <>
       {/* Logo */}
       <div className="p-6 border-b border-white/10">
         <Link href="/dashboard" className="flex items-center gap-3">
@@ -143,7 +144,21 @@ export function Sidebar() {
           <span className="font-medium">Cerrar Sesion</span>
         </button>
       </div>
-    </aside>
+    </>
+  )
+
+  return (
+    <>
+      {/* Desktop sidebar */}
+      <aside className="hidden md:flex fixed left-0 top-0 bottom-0 w-64 bg-primary-500 text-white flex-col z-40">
+        {sidebarContent}
+      </aside>
+
+      {/* Mobile drawer */}
+      <MobileOverlay>
+        {sidebarContent}
+      </MobileOverlay>
+    </>
   )
 }
 

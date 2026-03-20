@@ -13,10 +13,10 @@ interface HeaderProps {
 
 export function Header({ title, subtitle, action }: HeaderProps) {
   return (
-    <header className="bg-surface border-b border-border px-8 py-6">
+    <header className="bg-surface border-b border-border px-4 py-4 md:px-8 md:py-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">{title}</h1>
+          <h1 className="text-xl md:text-2xl font-semibold text-foreground">{title}</h1>
           {subtitle && (
             <p className="text-foreground-secondary mt-1">{subtitle}</p>
           )}
