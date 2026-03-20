@@ -114,6 +114,8 @@ export interface StrategyParameters {
   bb_std_dev: number    // e.g. 2
   stop_loss_pct: number // e.g. 0.02 (2%)
   take_profit_pct: number // e.g. 0.04 (4%)
+  /** Optional N-Signal system configuration. If absent, legacy 3-system behavior is used. */
+  signal_systems?: { id: string; weight: number; enabled: boolean }[]
 }
 
 // ============================================

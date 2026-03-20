@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getCandles } from '@/features/market-data/services/marketDataService'
-import {
-  calculateEMA,
-  calculateMACD,
-  calculateRSI,
-  calculateBollingerBands,
-  calculateATR,
-  calculateADX,
-} from '@/features/indicators/services/indicatorEngine'
+import { calculateATR } from '@/features/indicators/services/indicatorEngine'
 import { getLivePrice } from '@/features/paper-trading/services/priceService'
+import {
+  precomputeIndicators,
+  buildContext,
+  generateComposite,
+  LEGACY_SIGNAL_CONFIG,
+  type SignalSystemConfig,
+} from '@/features/paper-trading/services/signalRegistry'
 import type { StrategyParameters } from '@/types/database'
 import type { Timeframe } from '@/features/market-data/types'
 import { RISK_TIERS, type RiskTier } from '@/features/paper-trading/types'
@@ -346,10 +346,9 @@ async function getCurrentATR(symbol: string, timeframe: Timeframe): Promise<numb
 }
 
 /**
- * Full signal check — matches turbo simulator exactly:
- * - 3 signal systems (EMA cross, BB mean-reversion, ADX trend)
- * - Regime filtering (skip choppy/volatile)
- * - ATR-based position sizing
+ * Full signal check using the N-Signal registry.
+ * Backward compatible: strategies without signal_systems use legacy 3-system config.
+ * Includes regime filtering (skip choppy/volatile markets).
  */
 async function checkSignalFull(
   symbol: string,
@@ -362,74 +361,41 @@ async function checkSignalFull(
   const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 200 })
   if (candles.length < 50) return null
 
-  // Calculate ALL indicators (same as turbo simulator)
-  const emaFast = calculateEMA(candles, params.ema_fast)
-  const emaSlow = calculateEMA(candles, params.ema_slow)
-  const macd = calculateMACD(candles, params.macd_fast, params.macd_slow, params.macd_signal)
-  const rsi = calculateRSI(candles, params.rsi_period)
-  const bb = calculateBollingerBands(candles, params.bb_period, params.bb_std_dev)
-  const atr = calculateATR(candles, 14)
-  const adx = calculateADX(candles, 14)
+  // Pre-compute all indicators
+  const indicators = precomputeIndicators(candles, params)
+  const lastIndex = candles.length - 1
+  const prevIndex = candles.length - 2
 
-  if (emaFast.length < 2 || emaSlow.length < 2 || macd.length < 1 || rsi.length < 1 || atr.length < 1) {
-    return null
-  }
+  // Need previous EMA values for crossover detection
+  const prevTs = candles[prevIndex].timestamp
+  const prevEF = indicators.emaFastMap.get(prevTs)
+  const prevES = indicators.emaSlowMap.get(prevTs)
+  if (prevEF === undefined || prevES === undefined) return null
 
-  // Current values
-  const ef = emaFast[emaFast.length - 1].value
-  const es = emaSlow[emaSlow.length - 1].value
-  const pef = emaFast[emaFast.length - 2].value
-  const pes = emaSlow[emaSlow.length - 2].value
-  const m = macd[macd.length - 1]
-  const r = rsi[rsi.length - 1].value
-  const currentATR = atr[atr.length - 1].value
-  const currentADX = adx.length > 0 ? adx[adx.length - 1] : null
-  const currentBB = bb.length > 0 ? bb[bb.length - 1] : null
-  const price = candles[candles.length - 1].close
+  // Build signal context for the latest candle
+  const ctx = buildContext(candles, lastIndex, params, indicators, prevEF, prevES)
+  if (!ctx) return null
 
-  // Regime filtering — skip choppy and volatile markets (same as turbo sim)
-  const adxVal = currentADX?.adx ?? 0
+  // Regime filtering — skip choppy and volatile markets
+  const adxVal = ctx.adx?.adx ?? 0
   const isChoppy = adxVal < 20 && adxVal > 0
-  const atrAvg = atr.length > 50
-    ? atr.slice(-50).reduce((s, a) => s + a.value, 0) / 50
+  const atrValues = Array.from(indicators.atrMap.values())
+  const atrAvg = atrValues.length > 50
+    ? atrValues.slice(-50).reduce((s, a) => s + a, 0) / 50
     : 0
-  const isVolatile = atrAvg > 0 && currentATR > 2 * atrAvg
+  const isVolatile = atrAvg > 0 && ctx.atr > 2 * atrAvg
 
   if (isChoppy || isVolatile) return null
 
-  // System 1: EMA crossover + confluence
-  if (pef <= pes && ef > es) {
-    let conf = 0
-    if (m.histogram > 0) conf++
-    if (r < params.rsi_overbought) conf++
-    if (conf >= 1) return { signal: 'buy', atr: currentATR, reason: 'EMA cross up + confluence' }
-  }
-  if (pef >= pes && ef < es) {
-    let conf = 0
-    if (m.histogram < 0) conf++
-    if (r > params.rsi_oversold) conf++
-    if (conf >= 1) return { signal: 'sell', atr: currentATR, reason: 'EMA cross down + confluence' }
-  }
+  // Use strategy's signal_systems config, or fall back to legacy 3-system
+  const signalConfig: SignalSystemConfig[] = params.signal_systems ?? LEGACY_SIGNAL_CONFIG
 
-  // System 2: BB mean-reversion + RSI extremes
-  if (currentBB) {
-    if (price <= currentBB.lower && r < params.rsi_oversold + 5) {
-      return { signal: 'buy', atr: currentATR, reason: 'BB lower + RSI oversold' }
-    }
-    if (price >= currentBB.upper && r > params.rsi_overbought - 5) {
-      return { signal: 'sell', atr: currentATR, reason: 'BB upper + RSI overbought' }
-    }
-  }
+  const composite = generateComposite(ctx, signalConfig)
 
-  // System 3: Strong trend continuation (ADX > 30)
-  if (currentADX && currentADX.adx > 30) {
-    if (currentADX.plusDI > currentADX.minusDI && r > 40 && r < 65 && ef > es) {
-      return { signal: 'buy', atr: currentATR, reason: 'Strong uptrend (ADX>30)' }
-    }
-    if (currentADX.minusDI > currentADX.plusDI && r < 60 && r > 35 && ef < es) {
-      return { signal: 'sell', atr: currentATR, reason: 'Strong downtrend (ADX>30)' }
-    }
-  }
+  if (composite.direction === 'neutral') return null
 
-  return null
+  const signal: 'buy' | 'sell' = composite.direction === 'long' ? 'buy' : 'sell'
+  const reason = composite.activeSystems.join(' + ')
+
+  return { signal, atr: ctx.atr, reason }
 }

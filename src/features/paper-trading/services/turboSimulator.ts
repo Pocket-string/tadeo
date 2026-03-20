@@ -106,7 +106,7 @@ export async function turboSimulate(input: {
  * Pure simulation engine — no DB calls, just computation.
  * This is the core that runs at max speed.
  */
-function simulateOnCandles(
+export function simulateOnCandles(
   candles: OHLCVCandle[],
   params: StrategyParameters,
   initialCapital: number,
@@ -419,7 +419,7 @@ function mutateParams(base: StrategyParameters): StrategyParameters {
   return result
 }
 
-function scoreResult(r: SimResult): number {
+export function scoreResult(r: SimResult): number {
   const m = r.metrics
   if (m.totalTrades < 5) return -100 // Not enough trades
 
