@@ -12,6 +12,7 @@ import {
 } from '@/actions/paper-trading'
 import type { PaperSession, PaperDashboardData, LivePrice } from '../types'
 import type { MonitorReport, DivergenceAlert } from '../services/aiMonitor'
+import { StrategyHealthIndicator, getStrategyDescription, METRIC_TOOLTIPS } from './StrategyHealthIndicator'
 
 const AUTO_TICK_INTERVALS = [
   { label: '1 min', value: 60_000 },
@@ -381,6 +382,15 @@ export function PaperTradingDashboard() {
                 <StatusBadge status={session.status} />
               </div>
             </div>
+            {/* Health indicator + strategy description */}
+            <div className="mb-2">
+              <StrategyHealthIndicator
+                grade={null}
+                winRate={session.total_trades > 0 ? session.winning_trades / session.total_trades : 0}
+                totalTrades={session.total_trades}
+                netPnl={Number(session.net_pnl)}
+              />
+            </div>
             <div className="text-xs text-neutral-500 space-y-1">
               <div>Timeframe: {session.timeframe}</div>
               <div>Capital: ${Number(session.current_capital).toLocaleString()}</div>
@@ -455,10 +465,23 @@ export function PaperTradingDashboard() {
                 ? `${((dashboard.session.winning_trades / dashboard.session.total_trades) * 100).toFixed(1)}%`
                 : '—'}
               subtext={`${dashboard.session.winning_trades}/${dashboard.session.total_trades} trades`}
+              tooltip={METRIC_TOOLTIPS.winRate}
             />
             <KPICard
-              label="Posiciones Abiertas"
-              value={String(dashboard.openTrades.length)}
+              label="Salud"
+              value={(() => {
+                const wr = dashboard.session.total_trades > 0 ? dashboard.session.winning_trades / dashboard.session.total_trades : 0
+                const pnl = Number(dashboard.session.net_pnl)
+                const tt = dashboard.session.total_trades
+                if (tt < 5) return '—'
+                if (wr > 0.55 && pnl > 0 && tt >= 30) return 'A'
+                if (wr > 0.50 && pnl > 0 && tt >= 20) return 'B'
+                if (wr > 0.45 && pnl > 0 && tt >= 10) return 'C'
+                if (pnl > 0) return 'D'
+                return 'F'
+              })()}
+              color={Number(dashboard.session.net_pnl) > 0 ? 'green' : Number(dashboard.session.net_pnl) < 0 ? 'red' : undefined}
+              tooltip={METRIC_TOOLTIPS.grade}
             />
           </div>
 
@@ -640,10 +663,13 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
-function KPICard({ label, value, subtext, color }: { label: string; value: string; subtext?: string; color?: 'green' | 'red' }) {
+function KPICard({ label, value, subtext, color, tooltip }: { label: string; value: string; subtext?: string; color?: 'green' | 'red'; tooltip?: string }) {
   return (
-    <div className="bg-white rounded-2xl shadow-card p-4">
-      <p className="text-xs text-neutral-500">{label}</p>
+    <div className="bg-white rounded-2xl shadow-card p-4" title={tooltip}>
+      <p className="text-xs text-neutral-500 flex items-center gap-1">
+        {label}
+        {tooltip && <span className="text-neutral-300 cursor-help" title={tooltip}>?</span>}
+      </p>
       <p className={`text-xl font-bold ${color === 'green' ? 'text-green-600' : color === 'red' ? 'text-red-600' : 'text-neutral-800'}`}>
         {value}
       </p>

@@ -3,6 +3,7 @@ import { buildAnalysisContext } from '@/features/ai-analyst/services/aiAnalyst'
 import { simulateOnCandles, scoreResult } from '@/features/paper-trading/services/turboSimulator'
 import type { SimResult } from '@/features/paper-trading/services/turboSimulator'
 import { generateHypotheses } from './hypothesisGenerator'
+import { collectPaperFeedback, formatFeedbackForPrompt } from './feedbackCollector'
 import type { DiscoveryResult, StrategyHypothesis } from '../types'
 import type { OHLCVCandle } from '@/features/market-data/types'
 import type { Timeframe } from '@/features/market-data/types'
@@ -44,6 +45,15 @@ export async function runDiscoveryLoop(config: DiscoveryConfig): Promise<{
   let tested = 0
   let proposals = 0
 
+  // Collect paper trading feedback to inform hypothesis generation
+  let feedbackContext = ''
+  try {
+    const feedback = await collectPaperFeedback(config.userId)
+    feedbackContext = formatFeedbackForPrompt(feedback)
+  } catch {
+    // Non-blocking: discovery works without feedback
+  }
+
   for (const symbol of config.symbols) {
     for (const timeframe of config.timeframes) {
       scanned++
@@ -71,8 +81,8 @@ export async function runDiscoveryLoop(config: DiscoveryConfig): Promise<{
         // Step 2: ANALYZE — Build market context
         const context = await buildAnalysisContext(symbol, timeframe)
 
-        // Step 3: HYPOTHESIZE — AI generates strategy combinations
-        const hypotheses = await generateHypotheses(context, hypothesesPerMarket)
+        // Step 3: HYPOTHESIZE — AI generates strategy combinations (informed by paper trading feedback)
+        const hypotheses = await generateHypotheses(context, hypothesesPerMarket, feedbackContext)
 
         // Step 4: BACKTEST + OPTIMIZE each hypothesis
         for (const hypothesis of hypotheses) {

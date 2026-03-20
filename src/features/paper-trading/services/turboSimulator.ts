@@ -4,13 +4,17 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import {
   calculateEMA,
-  calculateMACD,
-  calculateRSI,
-  calculateBollingerBands,
   calculateATR,
   calculateADX,
   detectRegime,
 } from '@/features/indicators/services/indicatorEngine'
+import {
+  precomputeIndicators,
+  buildContext,
+  generateComposite,
+  LEGACY_SIGNAL_CONFIG,
+  type SignalSystemConfig,
+} from '@/features/paper-trading/services/signalRegistry'
 import type { StrategyParameters } from '@/types/database'
 import type { Timeframe } from '@/features/market-data/types'
 import type { OHLCVCandle } from '@/features/market-data/types'
@@ -114,24 +118,18 @@ export async function simulateOnCandles(
   timeframe: string,
   riskPerTrade?: number,
 ): Promise<SimResult> {
-  // Calculate all indicators upfront
+  // Pre-compute all indicators via the unified registry
+  const indicators = precomputeIndicators(candles, params)
   const emaFast = calculateEMA(candles, params.ema_fast)
   const emaSlow = calculateEMA(candles, params.ema_slow)
-  const macd = calculateMACD(candles, params.macd_fast, params.macd_slow, params.macd_signal)
-  const rsi = calculateRSI(candles, params.rsi_period)
-  const bb = calculateBollingerBands(candles, params.bb_period, params.bb_std_dev)
   const atr = calculateATR(candles, 14)
   const adx = calculateADX(candles, 14)
   const regime = detectRegime(candles, adx, atr, emaFast, emaSlow)
 
-  // Build lookup maps for O(1) access
-  const emaFastMap = new Map(emaFast.map(e => [e.timestamp, e.value]))
-  const emaSlowMap = new Map(emaSlow.map(e => [e.timestamp, e.value]))
-  const macdMap = new Map(macd.map(e => [e.timestamp, e]))
-  const rsiMap = new Map(rsi.map(e => [e.timestamp, e.value]))
-  const bbMap = new Map(bb.map(e => [e.timestamp, e]))
-  const atrMap = new Map(atr.map(e => [e.timestamp, e.value]))
-  const adxMap = new Map(adx.map(e => [e.timestamp, e]))
+  // Signal system config: use strategy's config or fall back to legacy 3-system
+  const signalConfig: SignalSystemConfig[] = params.signal_systems ?? LEGACY_SIGNAL_CONFIG
+
+  const atrValues = Array.from(indicators.atrMap.values())
 
   const trades: SimTrade[] = []
   let capital = initialCapital
@@ -147,6 +145,7 @@ export async function simulateOnCandles(
     takeProfit: number
     trailingActivation: number
     trailingStop: number | null
+    entryIndex: number
   } | null = null
 
   let prevEF: number | null = null
@@ -154,18 +153,16 @@ export async function simulateOnCandles(
 
   const slMult = params.stop_loss_pct > 1 ? params.stop_loss_pct : 1.5
   const tpMult = params.take_profit_pct > 1 ? params.take_profit_pct : 2.5
+  const maxHoldingCandles = 50
 
-  for (const candle of candles) {
+  for (let i = 0; i < candles.length; i++) {
+    const candle = candles[i]
     const ts = candle.timestamp
-    const ef = emaFastMap.get(ts)
-    const es = emaSlowMap.get(ts)
-    const m = macdMap.get(ts)
-    const r = rsiMap.get(ts)
-    const b = bbMap.get(ts)
-    const currentATR = atrMap.get(ts)
-    const currentADX = adxMap.get(ts)
+    const ef = indicators.emaFastMap.get(ts)
+    const es = indicators.emaSlowMap.get(ts)
+    const currentATR = indicators.atrMap.get(ts)
 
-    if (ef === undefined || es === undefined || !m || r === undefined || !b) {
+    if (ef === undefined || es === undefined) {
       if (ef !== undefined) prevEF = ef
       if (es !== undefined) prevES = es
       continue
@@ -188,12 +185,16 @@ export async function simulateOnCandles(
       }
     }
 
-    // Check SL/TP
+    // Check SL/TP/Time exit
     if (position) {
       let exitPrice: number | null = null
       let exitReason = ''
 
-      if (position.type === 'buy') {
+      // Time-based exit: close stale positions
+      if (i - position.entryIndex >= maxHoldingCandles) {
+        exitPrice = candle.close
+        exitReason = 'time_exit'
+      } else if (position.type === 'buy') {
         if (candle.low <= position.stopLoss) { exitPrice = position.stopLoss; exitReason = 'stop_loss' }
         else if (candle.high >= position.takeProfit) { exitPrice = position.takeProfit; exitReason = 'take_profit' }
       } else {
@@ -226,37 +227,44 @@ export async function simulateOnCandles(
       }
     }
 
-    // Generate signal
+    // Generate signal using the unified N-Signal registry
     if (!position && prevEF !== null && prevES !== null) {
-      const adxVal = currentADX?.adx ?? 0
-      const isChoppy = adxVal < 20 && adxVal > 0
-      const atrAvg = atr.length > 50
-        ? atr.slice(-50).reduce((s, a) => s + a.value, 0) / 50
-        : 0
-      const isVolatile = currentATR !== undefined && atrAvg > 0 && currentATR > 2 * atrAvg
+      const ctx = buildContext(candles, i, params, indicators, prevEF, prevES)
 
-      if (!isChoppy && !isVolatile) {
-        const signal = getSignal(prevEF, prevES, ef, es, m, r, params, b, currentADX, candle.close)
+      if (ctx) {
+        // Regime filtering — skip choppy and volatile markets
+        const adxVal = ctx.adx?.adx ?? 0
+        const isChoppy = adxVal < 20 && adxVal > 0
+        const atrAvg = atrValues.length > 50
+          ? atrValues.slice(-50).reduce((s, a) => s + a, 0) / 50
+          : 0
+        const isVolatile = currentATR !== undefined && atrAvg > 0 && currentATR > 2 * atrAvg
 
-        if (signal && currentATR) {
-          const riskAmt = capital * (riskPerTrade ?? 0.02)
-          const stopDist = currentATR * slMult
-          const qty = riskAmt / stopDist
+        if (!isChoppy && !isVolatile) {
+          const composite = generateComposite(ctx, signalConfig)
 
-          if (qty > 0 && riskAmt >= 0.5) {
-            const sl = signal === 'buy' ? candle.close - stopDist : candle.close + stopDist
-            const tp = signal === 'buy' ? candle.close + currentATR * tpMult : candle.close - currentATR * tpMult
-            const trailAct = signal === 'buy' ? candle.close + currentATR : candle.close - currentATR
+          if (composite.direction !== 'neutral' && currentATR) {
+            const signal: 'buy' | 'sell' = composite.direction === 'long' ? 'buy' : 'sell'
+            const riskAmt = capital * (riskPerTrade ?? 0.02)
+            const stopDist = currentATR * slMult
+            const qty = riskAmt / stopDist
 
-            position = {
-              type: signal,
-              entryTime: ts,
-              entryPrice: candle.close,
-              quantity: qty,
-              stopLoss: sl,
-              takeProfit: tp,
-              trailingActivation: trailAct,
-              trailingStop: sl,
+            if (qty > 0 && riskAmt >= 0.5) {
+              const sl = signal === 'buy' ? candle.close - stopDist : candle.close + stopDist
+              const tp = signal === 'buy' ? candle.close + currentATR * tpMult : candle.close - currentATR * tpMult
+              const trailAct = signal === 'buy' ? candle.close + currentATR : candle.close - currentATR
+
+              position = {
+                type: signal,
+                entryTime: ts,
+                entryPrice: candle.close,
+                quantity: qty,
+                stopLoss: sl,
+                takeProfit: tp,
+                trailingActivation: trailAct,
+                trailingStop: sl,
+                entryIndex: i,
+              }
             }
           }
         }
@@ -336,45 +344,6 @@ export async function simulateOnCandles(
   }
 }
 
-/**
- * Signal generator — same 3 systems as backtest engine.
- */
-function getSignal(
-  prevEF: number, prevES: number, ef: number, es: number,
-  m: { histogram: number }, r: number, params: StrategyParameters,
-  b?: { upper: number; lower: number; middle: number },
-  adx?: { adx: number; plusDI: number; minusDI: number },
-  price?: number,
-): 'buy' | 'sell' | null {
-  // System 1: EMA crossover + confluence
-  if (prevEF <= prevES && ef > es) {
-    let conf = 0
-    if (m.histogram > 0) conf++
-    if (r < params.rsi_overbought) conf++
-    if (conf >= 1) return 'buy'
-  }
-  if (prevEF >= prevES && ef < es) {
-    let conf = 0
-    if (m.histogram < 0) conf++
-    if (r > params.rsi_oversold) conf++
-    if (conf >= 1) return 'sell'
-  }
-
-  // System 2: BB mean-reversion + RSI extremes
-  if (b && price) {
-    if (price <= b.lower && r < params.rsi_oversold + 5) return 'buy'
-    if (price >= b.upper && r > params.rsi_overbought - 5) return 'sell'
-  }
-
-  // System 3: Strong trend continuation (ADX > 30)
-  if (adx && adx.adx > 30 && price) {
-    if (adx.plusDI > adx.minusDI && r > 40 && r < 65 && ef > es) return 'buy'
-    if (adx.minusDI > adx.plusDI && r < 60 && r > 35 && ef < es) return 'sell'
-  }
-
-  return null
-}
-
 // ============================================================
 // GENETIC OPTIMIZER: Evolve strategy parameters automatically
 // ============================================================
@@ -423,29 +392,32 @@ export async function scoreResult(r: SimResult): Promise<number> {
   const m = r.metrics
   if (m.totalTrades < 5) return -100 // Not enough trades
 
-  // PRIMARY: Must be profitable. No profit = no good.
   let score = 0
 
-  // Profitability is KING (40%) — this is what we're optimizing for
-  score += m.netPnlPct * 50
+  // Risk-adjusted return is king (35%) — Sharpe penalizes volatility
+  score += m.sharpeRatio * 12
 
-  // Profit Factor > 1 means winners > losers in dollar terms (25%)
-  if (m.profitFactor > 1) score += (m.profitFactor - 1) * 20
-  else score -= (1 - m.profitFactor) * 30 // Penalize PF < 1 heavily
+  // Profit factor consistency (20%) — winners must outweigh losers in $
+  if (m.profitFactor > 1) score += Math.min(20, (m.profitFactor - 1) * 15)
+  else score -= (1 - m.profitFactor) * 25
 
-  // Risk-adjusted returns (15%)
-  score += m.sharpeRatio * 5
+  // Drawdown penalty (15%) — protect capital
+  score -= m.maxDrawdown * 25
 
-  // Win rate matters but less than PnL (10%)
-  score += (m.winRate - 0.5) * 10
+  // Trade frequency (10%) — strategies must trade enough to be useful
+  if (m.tradesPerMonth > 2) score += Math.min(10, m.tradesPerMonth * 1.5)
 
-  // Penalize drawdown (10%)
-  score -= m.maxDrawdown * 15
+  // Win rate as tie-breaker (10%)
+  score += (m.winRate - 0.45) * 15
 
-  // Bonus for statistical significance
-  if (m.totalTrades >= 15) score += 3
-  if (m.totalTrades >= 30) score += 3
+  // Statistical robustness (10%) — more trades = more confidence
+  if (m.totalTrades >= 10) score += 3
+  if (m.totalTrades >= 20) score += 3
+  if (m.totalTrades >= 30) score += 2
   if (m.totalTrades >= 50) score += 2
+
+  // Anti-overfit: suspiciously high win rate with few trades
+  if (m.winRate > 0.85 && m.totalTrades < 20) score -= 10
 
   return score
 }

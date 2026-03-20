@@ -112,8 +112,8 @@ export interface StrategyParameters {
   macd_signal: number   // e.g. 9
   bb_period: number     // e.g. 20
   bb_std_dev: number    // e.g. 2
-  stop_loss_pct: number // e.g. 0.02 (2%)
-  take_profit_pct: number // e.g. 0.04 (4%)
+  stop_loss_pct: number // ATR multiplier, e.g. 1.5 (= 1.5x ATR distance)
+  take_profit_pct: number // ATR multiplier, e.g. 2.5 (= 2.5x ATR distance)
   /** Optional N-Signal system configuration. If absent, legacy 3-system behavior is used. */
   signal_systems?: { id: string; weight: number; enabled: boolean }[]
 }
@@ -201,8 +201,8 @@ export const DEFAULT_STRATEGY_PARAMS: StrategyParameters = {
   macd_signal: 9,
   bb_period: 20,
   bb_std_dev: 2,
-  stop_loss_pct: 0.02,
-  take_profit_pct: 0.04,
+  stop_loss_pct: 1.5,   // ATR multiplier (1.5x ATR = tight stop)
+  take_profit_pct: 2.5, // ATR multiplier (2.5x ATR = let winners run)
 }
 
 // ============================================

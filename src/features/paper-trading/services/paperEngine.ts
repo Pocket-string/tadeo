@@ -3,14 +3,14 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { getCandles } from '@/features/market-data/services/marketDataService'
+import { calculateATR } from '@/features/indicators/services/indicatorEngine'
 import {
-  calculateEMA,
-  calculateMACD,
-  calculateRSI,
-  calculateBollingerBands,
-  calculateATR,
-  calculateADX,
-} from '@/features/indicators/services/indicatorEngine'
+  precomputeIndicators,
+  buildContext,
+  generateComposite,
+  LEGACY_SIGNAL_CONFIG,
+  type SignalSystemConfig,
+} from '@/features/paper-trading/services/signalRegistry'
 import type { StrategyParameters } from '@/types/database'
 import type { Timeframe } from '@/features/market-data/types'
 import type { PaperSession, PaperTrade, RiskTier } from '../types'
@@ -128,27 +128,62 @@ export async function tickPaperSession(sessionId: string): Promise<{
 
   if (openTrades && openTrades.length > 0) {
     const trade = openTrades[0] as PaperTrade
-    const sl = Number(trade.stop_loss)
+    let sl = Number(trade.stop_loss)
     const tp = Number(trade.take_profit)
+    const price = currentPrice.price
 
+    // Time-based exit: close stale positions (estimate candle count from entry time)
+    const timeframeMs = getTimeframeMs(session.timeframe)
+    const entryTime = new Date(trade.entry_time || trade.created_at).getTime()
+    const candlesSinceEntry = Math.floor((Date.now() - entryTime) / timeframeMs)
+    if (candlesSinceEntry >= 50) {
+      const closed = await closePaperTrade(trade.id, price, 'time_exit')
+      await updateSessionStats(sessionId)
+      return { action: 'close', trade: closed, reason: `Time exit after ${candlesSinceEntry} candles` }
+    }
+
+    // Trailing stop: update SL if price moved favorably
+    const currentATR = await getCurrentATR(session.symbol, session.timeframe as Timeframe)
+    if (currentATR) {
+      const entryPrice = Number(trade.entry_price)
+      const trailActivation = trade.type === 'buy'
+        ? entryPrice + currentATR
+        : entryPrice - currentATR
+
+      if (trade.type === 'buy' && price > trailActivation) {
+        const newTrailSL = price - currentATR
+        if (newTrailSL > sl) {
+          await supabase.from('paper_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
+          sl = newTrailSL
+        }
+      } else if (trade.type === 'sell' && price < trailActivation) {
+        const newTrailSL = price + currentATR
+        if (newTrailSL < sl) {
+          await supabase.from('paper_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
+          sl = newTrailSL
+        }
+      }
+    }
+
+    // Check SL/TP
     if (trade.type === 'buy') {
-      if (currentPrice.price <= sl) {
+      if (price <= sl) {
         const closed = await closePaperTrade(trade.id, sl, 'stop_loss')
         await updateSessionStats(sessionId)
         return { action: 'close', trade: closed, reason: `Stop loss hit at ${sl}` }
       }
-      if (currentPrice.price >= tp) {
+      if (price >= tp) {
         const closed = await closePaperTrade(trade.id, tp, 'take_profit')
         await updateSessionStats(sessionId)
         return { action: 'close', trade: closed, reason: `Take profit hit at ${tp}` }
       }
     } else {
-      if (currentPrice.price >= sl) {
+      if (price >= sl) {
         const closed = await closePaperTrade(trade.id, sl, 'stop_loss')
         await updateSessionStats(sessionId)
         return { action: 'close', trade: closed, reason: `Stop loss hit at ${sl}` }
       }
-      if (currentPrice.price <= tp) {
+      if (price <= tp) {
         const closed = await closePaperTrade(trade.id, tp, 'take_profit')
         await updateSessionStats(sessionId)
         return { action: 'close', trade: closed, reason: `Take profit hit at ${tp}` }
@@ -271,11 +306,33 @@ async function updateSessionStats(sessionId: string): Promise<void> {
     .eq('id', sessionId)
 }
 
+/** Convert timeframe string to milliseconds */
+function getTimeframeMs(tf: string): number {
+  const map: Record<string, number> = {
+    '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
+    '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000,
+  }
+  return map[tf] ?? 3_600_000
+}
+
+/** Get current ATR value for a symbol/timeframe */
+async function getCurrentATR(symbol: string, timeframe: Timeframe): Promise<number | null> {
+  try {
+    const endDate = new Date().toISOString()
+    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 100 })
+    if (candles.length < 20) return null
+    const atr = calculateATR(candles, 14)
+    return atr.length > 0 ? atr[atr.length - 1].value : null
+  } catch {
+    return null
+  }
+}
+
 /**
- * Full signal check — matches turbo simulator exactly:
- * - 3 signal systems (EMA cross, BB mean-reversion, ADX trend)
- * - Regime filtering (skip choppy/volatile)
- * - Returns ATR for position sizing
+ * Full signal check using the unified N-Signal registry.
+ * Backward compatible: strategies without signal_systems use legacy 3-system config.
+ * Includes regime filtering (skip choppy/volatile markets).
  */
 async function checkSignalFull(
   symbol: string,
@@ -288,72 +345,41 @@ async function checkSignalFull(
   const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 200 })
   if (candles.length < 50) return null
 
-  const emaFast = calculateEMA(candles, params.ema_fast)
-  const emaSlow = calculateEMA(candles, params.ema_slow)
-  const macd = calculateMACD(candles, params.macd_fast, params.macd_slow, params.macd_signal)
-  const rsi = calculateRSI(candles, params.rsi_period)
-  const bb = calculateBollingerBands(candles, params.bb_period, params.bb_std_dev)
-  const atr = calculateATR(candles, 14)
-  const adx = calculateADX(candles, 14)
+  // Pre-compute all indicators via the unified registry
+  const indicators = precomputeIndicators(candles, params)
+  const lastIndex = candles.length - 1
+  const prevIndex = candles.length - 2
 
-  if (emaFast.length < 2 || emaSlow.length < 2 || macd.length < 1 || rsi.length < 1 || atr.length < 1) {
-    return null
-  }
+  // Need previous EMA values for crossover detection
+  const prevTs = candles[prevIndex].timestamp
+  const prevEF = indicators.emaFastMap.get(prevTs)
+  const prevES = indicators.emaSlowMap.get(prevTs)
+  if (prevEF === undefined || prevES === undefined) return null
 
-  const ef = emaFast[emaFast.length - 1].value
-  const es = emaSlow[emaSlow.length - 1].value
-  const pef = emaFast[emaFast.length - 2].value
-  const pes = emaSlow[emaSlow.length - 2].value
-  const m = macd[macd.length - 1]
-  const r = rsi[rsi.length - 1].value
-  const currentATR = atr[atr.length - 1].value
-  const currentADX = adx.length > 0 ? adx[adx.length - 1] : null
-  const currentBB = bb.length > 0 ? bb[bb.length - 1] : null
-  const price = candles[candles.length - 1].close
+  // Build signal context for the latest candle
+  const ctx = buildContext(candles, lastIndex, params, indicators, prevEF, prevES)
+  if (!ctx) return null
 
-  // Regime filtering — skip choppy and volatile (same as turbo sim)
-  const adxVal = currentADX?.adx ?? 0
+  // Regime filtering — skip choppy and volatile markets
+  const adxVal = ctx.adx?.adx ?? 0
   const isChoppy = adxVal < 20 && adxVal > 0
-  const atrAvg = atr.length > 50
-    ? atr.slice(-50).reduce((s, a) => s + a.value, 0) / 50
+  const atrValues = Array.from(indicators.atrMap.values())
+  const atrAvg = atrValues.length > 50
+    ? atrValues.slice(-50).reduce((s, a) => s + a, 0) / 50
     : 0
-  const isVolatile = atrAvg > 0 && currentATR > 2 * atrAvg
+  const isVolatile = atrAvg > 0 && ctx.atr > 2 * atrAvg
 
   if (isChoppy || isVolatile) return null
 
-  // System 1: EMA crossover + confluence
-  if (pef <= pes && ef > es) {
-    let conf = 0
-    if (m.histogram > 0) conf++
-    if (r < params.rsi_overbought) conf++
-    if (conf >= 1) return { signal: 'buy', atr: currentATR, reason: 'EMA cross up + confluence' }
-  }
-  if (pef >= pes && ef < es) {
-    let conf = 0
-    if (m.histogram < 0) conf++
-    if (r > params.rsi_oversold) conf++
-    if (conf >= 1) return { signal: 'sell', atr: currentATR, reason: 'EMA cross down + confluence' }
-  }
+  // Use strategy's signal_systems config, or fall back to legacy 3-system
+  const signalConfig: SignalSystemConfig[] = params.signal_systems ?? LEGACY_SIGNAL_CONFIG
 
-  // System 2: BB mean-reversion + RSI extremes
-  if (currentBB) {
-    if (price <= currentBB.lower && r < params.rsi_oversold + 5) {
-      return { signal: 'buy', atr: currentATR, reason: 'BB lower + RSI oversold' }
-    }
-    if (price >= currentBB.upper && r > params.rsi_overbought - 5) {
-      return { signal: 'sell', atr: currentATR, reason: 'BB upper + RSI overbought' }
-    }
-  }
+  const composite = generateComposite(ctx, signalConfig)
 
-  // System 3: Strong trend continuation (ADX > 30)
-  if (currentADX && currentADX.adx > 30) {
-    if (currentADX.plusDI > currentADX.minusDI && r > 40 && r < 65 && ef > es) {
-      return { signal: 'buy', atr: currentATR, reason: 'Strong uptrend (ADX>30)' }
-    }
-    if (currentADX.minusDI > currentADX.plusDI && r < 60 && r > 35 && ef < es) {
-      return { signal: 'sell', atr: currentATR, reason: 'Strong downtrend (ADX>30)' }
-    }
-  }
+  if (composite.direction === 'neutral') return null
 
-  return null
+  const signal: 'buy' | 'sell' = composite.direction === 'long' ? 'buy' : 'sell'
+  const reason = composite.activeSystems.join(' + ')
+
+  return { signal, atr: ctx.atr, reason }
 }

@@ -31,11 +31,16 @@ function getModel(): LanguageModel {
  */
 export async function generateHypotheses(
   context: AnalysisContext,
-  numHypotheses: number = 3
+  numHypotheses: number = 3,
+  paperFeedback?: string
 ): Promise<StrategyHypothesis[]> {
   const model = getModel()
   const systems = getAllSignalSystems()
   const systemList = systems.map(s => `- ${s.id}: ${s.name}`).join('\n')
+
+  const feedbackSection = paperFeedback
+    ? `\n${paperFeedback}\n`
+    : ''
 
   const prompt = `You are a quantitative strategy researcher discovering new trading strategies.
 
@@ -45,7 +50,7 @@ MARKET CONTEXT for ${context.symbol} (${context.timeframe}):
 - RSI(14): ${context.rsiValue.toFixed(1)} | MACD: ${context.macdCrossing}
 - BB Position: ${context.bbPosition} | Width: ${context.bbWidth.toFixed(4)}
 - Volume Ratio: ${context.volumeRatio.toFixed(2)}x
-
+${feedbackSection}
 AVAILABLE SIGNAL SYSTEMS (can combine any subset with weights):
 ${systemList}
 

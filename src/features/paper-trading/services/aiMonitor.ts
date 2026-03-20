@@ -81,12 +81,11 @@ export async function monitorSession(sessionId: string): Promise<MonitorReport> 
 
   if (!session) throw new Error('Session not found')
 
-  // Get paper trades for this session's strategy
+  // Get paper trades for this specific session
   const { data: paperTrades } = await supabase
     .from('paper_trades')
     .select('*')
-    .eq('strategy_id', session.strategy_id)
-    .eq('user_id', session.user_id)
+    .eq('session_id', sessionId)
     .order('created_at', { ascending: true })
 
   const trades = (paperTrades ?? []) as PaperTrade[]
