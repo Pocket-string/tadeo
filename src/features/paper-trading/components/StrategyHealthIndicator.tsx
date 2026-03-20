@@ -16,6 +16,7 @@ const GRADE_CONFIG: Record<StrategyGrade, { color: string; bg: string; label: st
   C: { color: 'text-amber-600', bg: 'bg-amber-400', label: 'Aceptable', emoji: '●' },
   D: { color: 'text-orange-600', bg: 'bg-orange-400', label: 'Debil', emoji: '●' },
   F: { color: 'text-red-600', bg: 'bg-red-500', label: 'Retirar', emoji: '●' },
+  '-': { color: 'text-gray-400', bg: 'bg-gray-300', label: 'Esperando datos', emoji: '○' },
 }
 
 /**
@@ -23,7 +24,7 @@ const GRADE_CONFIG: Record<StrategyGrade, { color: string; bg: string; label: st
  * Mirrors the grading logic in strategyAnalyzer.ts.
  */
 function quickGrade(winRate: number, totalTrades: number, netPnl: number): StrategyGrade {
-  if (totalTrades < 5) return 'F'
+  if (totalTrades < 5) return '-'
   if (winRate > 0.55 && netPnl > 0 && totalTrades >= 30) return 'A'
   if (winRate > 0.50 && netPnl > 0 && totalTrades >= 20) return 'B'
   if (winRate > 0.45 && netPnl > 0 && totalTrades >= 10) return 'C'

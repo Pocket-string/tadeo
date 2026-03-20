@@ -5,7 +5,7 @@ import type { PaperTrade } from '../types'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export type StrategyGrade = 'A' | 'B' | 'C' | 'D' | 'F'
+export type StrategyGrade = 'A' | 'B' | 'C' | 'D' | 'F' | '-'
 
 export interface StrategyMetrics {
   totalTrades: number
@@ -170,7 +170,7 @@ function computeMetrics(trades: PaperTrade[], initialCapital: number): StrategyM
 // ─── Grading ────────────────────────────────────────────────────────────────
 
 export function gradeStrategy(m: StrategyMetrics): StrategyGrade {
-  if (m.totalTrades < 5) return 'F'
+  if (m.totalTrades < 5) return '-'
 
   // A: Elite
   if (m.sharpeRatio > 1.5 && m.winRate > 0.55 && m.profitFactor > 2.0 && m.maxDrawdown < 0.10 && m.totalTrades >= 30) {
