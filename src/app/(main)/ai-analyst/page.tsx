@@ -12,7 +12,7 @@ export default async function AIAnalystPage() {
   const availableSymbols = [...new Set(marketData.map((m) => m.symbol))]
 
   return (
-    <div className="space-y-6">
+    <div className="p-4 md:p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground">AI Analyst</h1>
         <p className="text-sm text-muted-foreground mt-1">

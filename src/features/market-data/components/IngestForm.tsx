@@ -85,7 +85,7 @@ export function IngestForm() {
             <label className="block text-sm font-medium text-muted-foreground mb-1">
               Timeframe
             </label>
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1">
               {TIMEFRAMES.map((tf) => (
                 <button
                   key={tf}

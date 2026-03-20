@@ -9,7 +9,7 @@ export default async function PaperTradingPage() {
   if (!user) redirect('/login')
 
   return (
-    <div className="space-y-8">
+    <div className="p-4 md:p-6 space-y-8">
       <div>
         <h1 className="text-2xl font-heading font-bold text-neutral-800">Paper Trading</h1>
         <p className="text-neutral-500">Simulacion acelerada + trading en tiempo real.</p>

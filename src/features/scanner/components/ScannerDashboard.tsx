@@ -9,11 +9,11 @@ function ScoreBar({ value, label }: { value: number; label: string }) {
   const color = value >= 70 ? 'bg-green-500' : value >= 50 ? 'bg-yellow-500' : 'bg-red-500'
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="w-16 text-zinc-400">{label}</span>
-      <div className="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden">
+      <span className="w-16 text-foreground/40">{label}</span>
+      <div className="flex-1 h-2 bg-border rounded-full overflow-hidden">
         <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${value}%` }} />
       </div>
-      <span className="w-8 text-right text-zinc-300">{value}</span>
+      <span className="w-8 text-right text-foreground">{value}</span>
     </div>
   )
 }
@@ -26,7 +26,7 @@ function RegimeBadge({ regime }: { regime: string }) {
     choppy: 'bg-red-500/20 text-red-400 border-red-500/30',
   }
   return (
-    <span className={`px-2 py-0.5 text-xs rounded border ${colors[regime] ?? 'bg-zinc-700 text-zinc-300'}`}>
+    <span className={`px-2 py-0.5 text-xs rounded border ${colors[regime] ?? 'bg-foreground/10 text-foreground/60'}`}>
       {regime.toUpperCase()}
     </span>
   )
@@ -49,15 +49,15 @@ function OpportunityCard({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="font-bold text-lg text-white">{opp.symbol}</span>
-          <span className="text-xs text-zinc-400">{opp.timeframe}</span>
+          <span className="font-bold text-lg text-foreground">{opp.symbol}</span>
+          <span className="text-xs text-foreground/40">{opp.timeframe}</span>
           <RegimeBadge regime={opp.regime.regime} />
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-2xl font-bold ${opp.score.total >= 70 ? 'text-green-400' : opp.score.total >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
             {opp.score.total}
           </span>
-          <span className="text-xs text-zinc-500">/100</span>
+          <span className="text-xs text-foreground/40">/100</span>
         </div>
       </div>
 
@@ -66,23 +66,23 @@ function OpportunityCard({
         <span className={`text-xl font-bold uppercase ${signalColor}`}>
           {opp.signal}
         </span>
-        <span className="text-zinc-300">@ ${opp.price.toFixed(2)}</span>
-        <span className="text-xs text-zinc-500">R:R {opp.riskRewardRatio.toFixed(1)}:1</span>
+        <span className="text-foreground">@ ${opp.price.toFixed(2)}</span>
+        <span className="text-xs text-foreground/40">R:R {opp.riskRewardRatio.toFixed(1)}:1</span>
       </div>
 
       {/* Stops */}
       <div className="grid grid-cols-3 gap-2 text-xs">
-        <div className="bg-zinc-900 p-2 rounded">
-          <span className="text-zinc-500 block">Stop Loss</span>
+        <div className="bg-surface border border-border p-2 rounded">
+          <span className="text-foreground/40 block">Stop Loss</span>
           <span className="text-red-400 font-mono">${opp.stopLoss.toFixed(2)}</span>
         </div>
-        <div className="bg-zinc-900 p-2 rounded">
-          <span className="text-zinc-500 block">Take Profit</span>
+        <div className="bg-surface border border-border p-2 rounded">
+          <span className="text-foreground/40 block">Take Profit</span>
           <span className="text-green-400 font-mono">${opp.takeProfit.toFixed(2)}</span>
         </div>
-        <div className="bg-zinc-900 p-2 rounded">
-          <span className="text-zinc-500 block">ATR</span>
-          <span className="text-zinc-300 font-mono">${opp.atr.toFixed(2)}</span>
+        <div className="bg-surface border border-border p-2 rounded">
+          <span className="text-foreground/40 block">ATR</span>
+          <span className="text-foreground font-mono">${opp.atr.toFixed(2)}</span>
         </div>
       </div>
 
@@ -98,15 +98,15 @@ function OpportunityCard({
       {/* Indicators */}
       <div className="grid grid-cols-3 gap-2 text-xs">
         <div>
-          <span className="text-zinc-500">RSI:</span>{' '}
-          <span className="text-zinc-300">{opp.indicators.rsi.toFixed(1)}</span>
+          <span className="text-foreground/40">RSI:</span>{' '}
+          <span className="text-foreground">{opp.indicators.rsi.toFixed(1)}</span>
         </div>
         <div>
-          <span className="text-zinc-500">ADX:</span>{' '}
-          <span className="text-zinc-300">{opp.indicators.adx.toFixed(1)}</span>
+          <span className="text-foreground/40">ADX:</span>{' '}
+          <span className="text-foreground">{opp.indicators.adx.toFixed(1)}</span>
         </div>
         <div>
-          <span className="text-zinc-500">MACD:</span>{' '}
+          <span className="text-foreground/40">MACD:</span>{' '}
           <span className={opp.indicators.macdHistogram > 0 ? 'text-green-400' : 'text-red-400'}>
             {opp.indicators.macdHistogram.toFixed(4)}
           </span>
@@ -115,26 +115,26 @@ function OpportunityCard({
 
       {/* Quick Backtest */}
       {opp.quickBacktest && (
-        <div className="border-t border-zinc-700 pt-2 text-xs">
-          <span className="text-zinc-500">Quick Backtest ({opp.quickBacktest.sampleSize} candles):</span>
+        <div className="border-t border-border pt-2 text-xs">
+          <span className="text-foreground/40">Quick Backtest ({opp.quickBacktest.sampleSize} candles):</span>
           <div className="grid grid-cols-4 gap-2 mt-1">
             <div>
-              <span className="text-zinc-500">Trades:</span>{' '}
-              <span className="text-zinc-300">{opp.quickBacktest.metrics.totalTrades}</span>
+              <span className="text-foreground/40">Trades:</span>{' '}
+              <span className="text-foreground">{opp.quickBacktest.metrics.totalTrades}</span>
             </div>
             <div>
-              <span className="text-zinc-500">Win:</span>{' '}
+              <span className="text-foreground/40">Win:</span>{' '}
               <span className={opp.quickBacktest.metrics.winRate > 0.5 ? 'text-green-400' : 'text-red-400'}>
                 {(opp.quickBacktest.metrics.winRate * 100).toFixed(0)}%
               </span>
             </div>
             <div>
-              <span className="text-zinc-500">PF:</span>{' '}
-              <span className="text-zinc-300">{opp.quickBacktest.metrics.profitFactor.toFixed(2)}</span>
+              <span className="text-foreground/40">PF:</span>{' '}
+              <span className="text-foreground">{opp.quickBacktest.metrics.profitFactor.toFixed(2)}</span>
             </div>
             <div>
-              <span className="text-zinc-500">Sharpe:</span>{' '}
-              <span className="text-zinc-300">{opp.quickBacktest.metrics.sharpeRatio.toFixed(2)}</span>
+              <span className="text-foreground/40">Sharpe:</span>{' '}
+              <span className="text-foreground">{opp.quickBacktest.metrics.sharpeRatio.toFixed(2)}</span>
             </div>
           </div>
         </div>
@@ -222,19 +222,19 @@ export default function ScannerDashboard() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="p-4 md:p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Opportunity Scanner</h1>
-          <p className="text-zinc-400 text-sm">
+          <h1 className="text-xl md:text-2xl font-bold text-foreground">Opportunity Scanner</h1>
+          <p className="text-foreground/60 text-sm">
             Escanea automáticamente todos los pares disponibles y rankea las mejores oportunidades
           </p>
         </div>
         <button
           onClick={handleScan}
           disabled={scanning}
-          className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+          className="w-full sm:w-auto px-6 py-3 bg-primary-500 hover:bg-primary-600 text-white rounded-xl font-medium transition-colors disabled:opacity-50"
         >
           {scanning ? 'Escaneando...' : 'Escanear Mercado'}
         </button>
@@ -242,7 +242,7 @@ export default function ScannerDashboard() {
 
       {/* Available Data */}
       {availableData.length > 0 && (
-        <div className="text-xs text-zinc-500">
+        <div className="text-xs text-foreground/40">
           Datos disponibles: {availableData.map(d => `${d.symbol} ${d.timeframe} (${d.candleCount ?? d.candle_count ?? '?'})`).join(' | ')}
         </div>
       )}
@@ -262,16 +262,16 @@ export default function ScannerDashboard() {
       {/* Scan Results */}
       {result && (
         <>
-          <div className="flex items-center gap-4 text-sm text-zinc-400">
+          <div className="flex flex-wrap items-center gap-4 text-sm text-foreground/60">
             <span>Escaneados: {result.scannedPairs} pares × {result.scannedTimeframes} timeframes</span>
             <span>Duración: {result.scanDuration}ms</span>
             <span>Oportunidades: {result.opportunities.length}</span>
           </div>
 
           {result.opportunities.length === 0 ? (
-            <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-8 text-center">
-              <p className="text-zinc-400 text-lg">No hay oportunidades con score {'>'} 60 en este momento</p>
-              <p className="text-zinc-500 text-sm mt-2">
+            <div className="bg-surface border border-border rounded-lg p-8 text-center">
+              <p className="text-foreground/60 text-lg">No hay oportunidades con score {'>'} 60 en este momento</p>
+              <p className="text-foreground/40 text-sm mt-2">
                 El mercado puede estar lateral (choppy) o volátil. Esto es normal — el scanner protege tu capital.
               </p>
             </div>
@@ -292,14 +292,14 @@ export default function ScannerDashboard() {
 
       {/* Instructions when no scan yet */}
       {!result && !scanning && (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-8 text-center space-y-4">
+        <div className="bg-surface border border-border rounded-lg p-8 text-center space-y-4">
           <div className="text-4xl">🔍</div>
-          <h2 className="text-xl font-bold text-white">Listo para escanear</h2>
-          <p className="text-zinc-400 max-w-lg mx-auto">
+          <h2 className="text-xl font-bold text-foreground">Listo para escanear</h2>
+          <p className="text-foreground/60 max-w-lg mx-auto">
             El scanner analiza todos tus pares disponibles, detecta el régimen de mercado,
             y solo presenta oportunidades con score {'>'} 60/100 en mercados con tendencia clara.
           </p>
-          <div className="text-zinc-500 text-sm space-y-1">
+          <div className="text-foreground/40 text-sm space-y-1">
             <p>Filtros activos: ADX {'>'} 20 (tendencia), ATR normal (no volátil), confluencia de indicadores</p>
             <p>Stops dinámicos basados en ATR (se adaptan a la volatilidad real)</p>
           </div>

@@ -16,17 +16,17 @@ export default async function BacktestsPage() {
   ])
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-4 md:p-6 space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Backtesting</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-foreground">Backtesting</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Valida tus estrategias con datos historicos
           </p>
         </div>
         <Link
           href="/backtests/scientific"
-          className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
+          className="w-full sm:w-auto text-center px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
         >
           Backtest Cientifico →
         </Link>
