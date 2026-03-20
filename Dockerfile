@@ -33,6 +33,9 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Install bash + wget (Dokploy cron uses bash -c)
+RUN apk add --no-cache bash wget
+
 # Non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
