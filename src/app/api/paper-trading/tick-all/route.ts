@@ -42,9 +42,7 @@ export async function POST(req: NextRequest) {
   const providedToken = authHeader?.replace('Bearer ', '')
   const isAuthorized =
     (cronSecret && providedToken === cronSecret) ||
-    (serviceKeySuffix && providedToken === serviceKeySuffix) ||
-    // Allow from same origin (localhost dev)
-    req.headers.get('x-auto-tick') === 'true'
+    (serviceKeySuffix && providedToken === serviceKeySuffix)
 
   if (!isAuthorized) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
