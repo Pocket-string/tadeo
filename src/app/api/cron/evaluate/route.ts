@@ -13,13 +13,14 @@ interface EvalResult {
   sessionId: string
   symbol: string
   grade: string
-  action: 'retired' | 'warning' | 'ok'
+  action: 'retired' | 'warning' | 'ok' | 'scale_proposed'
   reason: string
 }
 
 /**
  * Cron endpoint: evaluate all active paper trading sessions and auto-retire failing ones.
  * Grades: A/B/C = keep, D = warning, F = auto-retire.
+ * Also: triggers targeted discovery on retire, proposes scale-up for A/B sessions.
  */
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization')
@@ -96,6 +97,11 @@ export async function POST(req: NextRequest) {
         else { streak = 0 }
       }
 
+      // Days since session started
+      const daysSinceStart = session.created_at
+        ? (Date.now() - new Date(session.created_at).getTime()) / (1000 * 60 * 60 * 24)
+        : 0
+
       // Grade
       let grade: string
       if (sharpe > 1.5 && winRate > 0.55 && profitFactor > 2.0 && maxDD < 0.10 && totalTrades >= 30) grade = 'A'
@@ -104,9 +110,18 @@ export async function POST(req: NextRequest) {
       else if (netPnl > 0) grade = 'D'
       else grade = 'F'
 
-      // Auto-retire F strategies
-      if (grade === 'F' || maxDD > 0.25 || maxConsecLoss >= 5 || (totalTrades >= 15 && winRate < 0.35)) {
-        // Close open trades at current capital
+      const metricsSnapshot = { totalTrades, winRate, sharpe, maxDD, profitFactor, netPnl, maxConsecLoss }
+
+      // Auto-retire: F, DD>25%, 5 consec losses, WR<35% with 15+ trades, OR Sharpe<0 with 20+ trades
+      const shouldRetire =
+        grade === 'F' ||
+        maxDD > 0.25 ||
+        maxConsecLoss >= 5 ||
+        (totalTrades >= 15 && winRate < 0.35) ||
+        (totalTrades >= 20 && sharpe < 0)
+
+      if (shouldRetire) {
+        // Close open trades
         const { data: openTrades } = await supabase
           .from('paper_trades')
           .select('id')
@@ -138,11 +153,104 @@ export async function POST(req: NextRequest) {
 
         const reason = maxDD > 0.25 ? `DD ${(maxDD * 100).toFixed(1)}% > 25%`
           : maxConsecLoss >= 5 ? `${maxConsecLoss} consecutive losses`
-          : winRate < 0.35 ? `WR ${(winRate * 100).toFixed(0)}% < 35%`
+          : (totalTrades >= 15 && winRate < 0.35) ? `WR ${(winRate * 100).toFixed(0)}% < 35%`
+          : (totalTrades >= 20 && sharpe < 0) ? `Sharpe ${sharpe.toFixed(2)} < 0 (${totalTrades} trades)`
           : `Grade F (PnL: ${netPnl.toFixed(2)})`
 
+        // Log retirement event
+        await supabase.from('paper_session_events').insert({
+          session_id: session.id,
+          event_type: 'auto_retired',
+          reason,
+          metrics_snapshot: metricsSnapshot,
+        })
+
+        // Trigger targeted discovery for this symbol+timeframe (non-blocking)
+        triggerTargetedDiscovery(
+          session.symbol,
+          session.timeframe,
+          session.user_id,
+          reason
+        ).catch(() => { /* non-blocking */ })
+
         results.push({ sessionId: session.id, symbol: session.symbol, grade, action: 'retired', reason })
+
+      } else if (grade === 'A' && daysSinceStart >= 7) {
+        // Propose capital scale-up for Grade A sessions sustained 7+ days
+        const proposedCapital = Math.round(Number(session.current_capital) * 2)
+        const { data: existingProposal } = await supabase
+          .from('paper_session_proposals')
+          .select('id')
+          .eq('session_id', session.id)
+          .eq('proposal_type', 'scale_up')
+          .eq('status', 'pending')
+          .maybeSingle()
+
+        if (!existingProposal) {
+          await supabase.from('paper_session_proposals').insert({
+            session_id: session.id,
+            user_id: session.user_id,
+            proposal_type: 'scale_up',
+            proposed_value: {
+              current_capital: Number(session.current_capital),
+              proposed_capital: proposedCapital,
+              symbol: session.symbol,
+              timeframe: session.timeframe,
+              grade,
+              sharpe: sharpe.toFixed(2),
+              win_rate: (winRate * 100).toFixed(0),
+            },
+            reason: `Grade A sostenido ${daysSinceStart.toFixed(0)} días. WR:${(winRate * 100).toFixed(0)}% Sharpe:${sharpe.toFixed(2)}`,
+          })
+
+          await supabase.from('paper_session_events').insert({
+            session_id: session.id,
+            event_type: 'scale_proposed',
+            reason: `Capital propuesto: $${Number(session.current_capital)} → $${proposedCapital}`,
+            metrics_snapshot: metricsSnapshot,
+          })
+        }
+
+        results.push({ sessionId: session.id, symbol: session.symbol, grade, action: 'scale_proposed', reason: `Grade A — propuesta de escalado a $${proposedCapital}` })
+
+      } else if (grade === 'B' && daysSinceStart >= 7 && totalTrades >= 20) {
+        // Propose 50% scale-up for Grade B sessions with 20+ trades sustained 7+ days
+        const proposedCapital = Math.round(Number(session.current_capital) * 1.5)
+        const { data: existingProposal } = await supabase
+          .from('paper_session_proposals')
+          .select('id')
+          .eq('session_id', session.id)
+          .eq('proposal_type', 'scale_up')
+          .eq('status', 'pending')
+          .maybeSingle()
+
+        if (!existingProposal) {
+          await supabase.from('paper_session_proposals').insert({
+            session_id: session.id,
+            user_id: session.user_id,
+            proposal_type: 'scale_up',
+            proposed_value: {
+              current_capital: Number(session.current_capital),
+              proposed_capital: proposedCapital,
+              symbol: session.symbol,
+              timeframe: session.timeframe,
+              grade,
+              sharpe: sharpe.toFixed(2),
+              win_rate: (winRate * 100).toFixed(0),
+            },
+            reason: `Grade B, ${totalTrades} trades, ${daysSinceStart.toFixed(0)} días. WR:${(winRate * 100).toFixed(0)}% Sharpe:${sharpe.toFixed(2)}`,
+          })
+        }
+
+        results.push({ sessionId: session.id, symbol: session.symbol, grade, action: 'ok', reason: `Grade B — propuesta +50% capital` })
+
       } else if (grade === 'D') {
+        await supabase.from('paper_session_events').insert({
+          session_id: session.id,
+          event_type: 'grade_warning',
+          reason: `Grade D: WR ${(winRate * 100).toFixed(0)}%, PF ${profitFactor.toFixed(2)}, Sharpe ${sharpe.toFixed(2)}`,
+          metrics_snapshot: metricsSnapshot,
+        })
         results.push({ sessionId: session.id, symbol: session.symbol, grade, action: 'warning', reason: `Underperforming: WR ${(winRate * 100).toFixed(0)}%, PF ${profitFactor.toFixed(2)}, Sharpe ${sharpe.toFixed(2)}` })
       } else {
         results.push({ sessionId: session.id, symbol: session.symbol, grade, action: 'ok', reason: `Healthy: Grade ${grade}` })
@@ -156,8 +264,30 @@ export async function POST(req: NextRequest) {
     message: `Evaluated ${sessions.length} sessions`,
     retired: results.filter(r => r.action === 'retired').length,
     warnings: results.filter(r => r.action === 'warning').length,
+    scale_proposed: results.filter(r => r.action === 'scale_proposed').length,
     healthy: results.filter(r => r.action === 'ok').length,
     results,
     timestamp: new Date().toISOString(),
+  })
+}
+
+/**
+ * Trigger targeted discovery for a specific symbol+timeframe after a session retires.
+ * Non-blocking — runs in background.
+ */
+async function triggerTargetedDiscovery(
+  symbol: string,
+  timeframe: string,
+  userId: string,
+  failureReason: string
+): Promise<void> {
+  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'
+  await fetch(`${baseUrl}/api/cron/discover`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'authorization': `Bearer ${process.env.CRON_SECRET}`,
+    },
+    body: JSON.stringify({ symbol, timeframe, userId, failureReason }),
   })
 }

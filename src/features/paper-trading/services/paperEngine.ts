@@ -197,7 +197,7 @@ export async function tickPaperSession(sessionId: string): Promise<{
   const signalResult = await checkSignalFull(session.symbol, session.timeframe as Timeframe, params)
   if (!signalResult) return { action: 'hold', reason: 'No signal detected' }
 
-  const { signal, atr: currentATR } = signalResult
+  const { signal, atr: currentATR, activeSystems: signalSystems } = signalResult
 
   // ATR-based SL/TP (matches turbo simulator exactly)
   const slMult = params.stop_loss_pct > 1 ? params.stop_loss_pct : 1.5
@@ -230,6 +230,7 @@ export async function tickPaperSession(sessionId: string): Promise<{
       quantity,
       stop_loss: stopLoss,
       take_profit: takeProfit,
+      metadata: { active_systems: signalSystems ?? [] },
     })
     .select()
 
@@ -341,7 +342,7 @@ async function checkSignalFull(
   symbol: string,
   timeframe: Timeframe,
   params: StrategyParameters
-): Promise<{ signal: 'buy' | 'sell'; atr: number; reason: string } | null> {
+): Promise<{ signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[] } | null> {
   const endDate = new Date().toISOString()
   const startDate = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
 
@@ -394,7 +395,7 @@ async function checkSignalFull(
 
   const reason = composite.activeSystems.join(' + ')
 
-  return { signal, atr: ctx.atr, reason }
+  return { signal, atr: ctx.atr, reason, activeSystems: composite.activeSystems }
 }
 
 async function computeHTFBias(symbol: string, htf: Timeframe): Promise<'bull' | 'bear' | 'neutral'> {

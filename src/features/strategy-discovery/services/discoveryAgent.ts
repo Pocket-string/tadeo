@@ -23,6 +23,8 @@ interface DiscoveryConfig {
   hypothesesPerMarket?: number
   minScore?: number
   monthsBack?: number
+  /** Failure context from a retired session — passed to AI to avoid repeating mistakes */
+  failureContext?: string
 }
 
 /**
@@ -52,6 +54,11 @@ export async function runDiscoveryLoop(config: DiscoveryConfig): Promise<{
     feedbackContext = formatFeedbackForPrompt(feedback)
   } catch {
     // Non-blocking: discovery works without feedback
+  }
+
+  // Prepend failure context if triggered by auto-retire (avoids repeating same mistakes)
+  if (config.failureContext) {
+    feedbackContext = config.failureContext + '\n\n' + feedbackContext
   }
 
   for (const symbol of config.symbols) {

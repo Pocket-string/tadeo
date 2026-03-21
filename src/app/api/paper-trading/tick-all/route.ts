@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
 
   // Cache prices and signals per symbol+timeframe to avoid redundant API calls
   const priceCache = new Map<string, number>()
-  const signalCache = new Map<string, { signal: 'buy' | 'sell'; atr: number; reason: string } | null>()
+  const signalCache = new Map<string, { signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[] } | null>()
 
   for (const session of sessions) {
     const riskTier: RiskTier = (session.risk_tier as RiskTier) || 'moderate'
@@ -221,7 +221,7 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      const { signal, atr: currentATR, reason: signalReason } = signalResult
+      const { signal, atr: currentATR, reason: signalReason, activeSystems: signalSystems } = signalResult
 
       // Open paper trade with ATR-based SL/TP
       const slMult = params.stop_loss_pct > 1 ? params.stop_loss_pct : 1.5
@@ -264,6 +264,7 @@ export async function POST(req: NextRequest) {
           quantity,
           stop_loss: stopLoss,
           take_profit: takeProfit,
+          metadata: { active_systems: signalSystems ?? [] },
         })
         .select('id')
 
@@ -364,7 +365,7 @@ async function checkSignalFull(
   symbol: string,
   timeframe: Timeframe,
   params: StrategyParameters
-): Promise<{ signal: 'buy' | 'sell'; atr: number; reason: string } | null> {
+): Promise<{ signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[] } | null> {
   const endDate = new Date().toISOString()
   const startDate = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
 
@@ -418,7 +419,7 @@ async function checkSignalFull(
 
   const reason = composite.activeSystems.join(' + ')
 
-  return { signal, atr: ctx.atr, reason }
+  return { signal, atr: ctx.atr, reason, activeSystems: composite.activeSystems }
 }
 
 /**

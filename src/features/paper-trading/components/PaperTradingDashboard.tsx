@@ -10,6 +10,9 @@ import {
   getPaperDashboard,
   getStrategiesForPaper,
   getRecentTrades,
+  getPaperProposals,
+  respondToProposal,
+  getSignalAttribution,
 } from '@/actions/paper-trading'
 import type { PaperSession, PaperDashboardData, LivePrice } from '../types'
 import type { MonitorReport, DivergenceAlert } from '../services/aiMonitor'
@@ -27,6 +30,9 @@ export function PaperTradingDashboard() {
   const [showNewSession, setShowNewSession] = useState(false)
   const [sessionFilter, setSessionFilter] = useState<'active' | 'stopped' | 'all'>('active')
   const [error, setError] = useState<string | null>(null)
+  const [proposals, setProposals] = useState<Awaited<ReturnType<typeof getPaperProposals>>>([])
+  const [attribution, setAttribution] = useState<Awaited<ReturnType<typeof getSignalAttribution>>>([])
+  const [respondingProposal, setRespondingProposal] = useState<string | null>(null)
 
   // New session form
   const [newStrategyId, setNewStrategyId] = useState('')
@@ -36,10 +42,13 @@ export function PaperTradingDashboard() {
 
   const loadSessions = useCallback(async () => {
     try {
-      const [sess, strats, recent] = await Promise.all([getPaperSessions(), getStrategiesForPaper(), getRecentTrades(8)])
+      const [sess, strats, recent, props] = await Promise.all([
+        getPaperSessions(), getStrategiesForPaper(), getRecentTrades(8), getPaperProposals()
+      ])
       setSessions(sess)
       setStrategies(strats)
       setRecentTrades(recent)
+      setProposals(props)
       if (strats.length > 0 && !newStrategyId) setNewStrategyId(strats[0].id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error loading sessions')
@@ -50,8 +59,12 @@ export function PaperTradingDashboard() {
 
   const loadDashboard = useCallback(async (sessionId: string) => {
     try {
-      const data = await getPaperDashboard(sessionId)
+      const [data, attr] = await Promise.all([
+        getPaperDashboard(sessionId),
+        getSignalAttribution(sessionId, 15),
+      ])
       setDashboard(data)
+      setAttribution(attr)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error loading dashboard')
     }
@@ -265,6 +278,58 @@ export function PaperTradingDashboard() {
         )}
       </div>
 
+      {/* Agentic Proposals — scale-up suggestions from the evaluator */}
+      {proposals.length > 0 && (
+        <div className="space-y-2">
+          {proposals.map(p => {
+            const v = p.proposed_value as { symbol?: string; timeframe?: string; proposed_capital?: number; current_capital?: number; grade?: string; win_rate?: string; sharpe?: string }
+            return (
+              <div key={p.id} className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-amber-600 font-semibold text-sm">Propuesta del Sistema</span>
+                    <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-xs font-medium">Grado {v.grade}</span>
+                  </div>
+                  <p className="text-sm text-neutral-700">{p.reason}</p>
+                  {v.proposed_capital && v.current_capital && (
+                    <p className="text-xs text-neutral-500 mt-1">
+                      Capital: ${v.current_capital} → <span className="font-semibold text-green-700">${v.proposed_capital}</span>
+                      {v.win_rate && ` · WR: ${v.win_rate}%`}{v.sharpe && ` · Sharpe: ${v.sharpe}`}
+                    </p>
+                  )}
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    disabled={respondingProposal === p.id}
+                    onClick={async () => {
+                      setRespondingProposal(p.id)
+                      await respondToProposal(p.id, 'approved')
+                      setProposals(prev => prev.filter(x => x.id !== p.id))
+                      setRespondingProposal(null)
+                    }}
+                    className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 transition disabled:opacity-50"
+                  >
+                    Aprobar
+                  </button>
+                  <button
+                    disabled={respondingProposal === p.id}
+                    onClick={async () => {
+                      setRespondingProposal(p.id)
+                      await respondToProposal(p.id, 'rejected')
+                      setProposals(prev => prev.filter(x => x.id !== p.id))
+                      setRespondingProposal(null)
+                    }}
+                    className="px-3 py-1.5 bg-neutral-200 text-neutral-600 rounded-lg text-xs font-medium hover:bg-neutral-300 transition disabled:opacity-50"
+                  >
+                    Rechazar
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       {/* Sessions Filter + List */}
       <div className="flex items-center gap-1 bg-neutral-100 rounded-xl p-1 w-fit">
         {(['active', 'stopped', 'all'] as const).map(f => {
@@ -453,6 +518,31 @@ export function PaperTradingDashboard() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          )}
+
+          {/* Signal Attribution Panel */}
+          {attribution.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-card p-4">
+              <h3 className="font-semibold text-neutral-800 mb-3">Atribución de Señales <span className="text-xs font-normal text-neutral-400">(últimos 15 trades)</span></h3>
+              <div className="space-y-2">
+                {attribution.map(item => (
+                  <div key={item.system} className="flex items-center gap-3">
+                    <span className="text-xs text-neutral-600 w-32 shrink-0 font-mono">{item.system}</span>
+                    <div className="flex-1 bg-neutral-100 rounded-full h-2 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${item.winRate >= 0.65 ? 'bg-green-500' : item.winRate >= 0.5 ? 'bg-amber-400' : 'bg-red-400'}`}
+                        style={{ width: `${Math.round(item.winRate * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-neutral-500 w-12 text-right">{Math.round(item.winRate * 100)}% WR</span>
+                    <span className={`text-xs font-bold w-8 text-right ${item.contribution === '+++' ? 'text-green-600' : item.contribution === '++' ? 'text-green-500' : item.contribution === '=' ? 'text-neutral-400' : 'text-red-500'}`}>
+                      {item.contribution}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-neutral-400 mt-3">Solo trades con metadata de señal (nuevos desde hoy).</p>
             </div>
           )}
 

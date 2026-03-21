@@ -65,3 +65,49 @@ export async function GET(req: NextRequest) {
     ...result,
   })
 }
+
+/**
+ * POST — Targeted discovery triggered by auto-retire.
+ * Runs discovery for a specific symbol+timeframe with failure context.
+ */
+export async function POST(req: NextRequest) {
+  const authHeader = req.headers.get('authorization')
+  const providedToken = authHeader?.replace('Bearer ', '')
+
+  if (providedToken !== process.env.CRON_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const body = await req.json() as {
+    symbol: string
+    timeframe: string
+    userId: string
+    failureReason?: string
+  }
+
+  const { symbol, timeframe, userId, failureReason } = body
+  if (!symbol || !timeframe || !userId) {
+    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+  }
+
+  const result = await runDiscoveryLoop({
+    symbols: [symbol],
+    timeframes: [timeframe as Timeframe],
+    userId,
+    hypothesesPerMarket: 2,
+    minScore: 6, // Higher bar for auto-deployed sessions
+    monthsBack: 6,
+    failureContext: failureReason
+      ? `SESIÓN RETIRADA (${symbol} ${timeframe}): ${failureReason}. Genera hipótesis que EVITEN este problema.`
+      : undefined,
+  })
+
+  return NextResponse.json({
+    ok: true,
+    triggered_by: 'auto_retire',
+    symbol,
+    timeframe,
+    timestamp: new Date().toISOString(),
+    ...result,
+  })
+}
