@@ -25,6 +25,7 @@ export function PaperTradingDashboard() {
   const [loading, setLoading] = useState(true)
   const [tickLoading, setTickLoading] = useState(false)
   const [showNewSession, setShowNewSession] = useState(false)
+  const [sessionFilter, setSessionFilter] = useState<'active' | 'stopped' | 'all'>('active')
   const [error, setError] = useState<string | null>(null)
 
   // New session form
@@ -264,9 +265,25 @@ export function PaperTradingDashboard() {
         )}
       </div>
 
-      {/* Sessions List */}
+      {/* Sessions Filter + List */}
+      <div className="flex items-center gap-1 bg-neutral-100 rounded-xl p-1 w-fit">
+        {(['active', 'stopped', 'all'] as const).map(f => {
+          const counts = { active: sessions.filter(s => s.status === 'active').length, stopped: sessions.filter(s => s.status === 'stopped').length, all: sessions.length }
+          const labels = { active: 'Activas', stopped: 'Detenidas', all: 'Todas' }
+          return (
+            <button
+              key={f}
+              onClick={() => setSessionFilter(f)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${sessionFilter === f ? 'bg-white shadow text-neutral-800' : 'text-neutral-500 hover:text-neutral-700'}`}
+            >
+              {labels[f]} <span className="ml-1 opacity-60">{counts[f]}</span>
+            </button>
+          )
+        })}
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {sessions.map(session => (
+        {sessions.filter(s => sessionFilter === 'all' || s.status === sessionFilter).map(session => (
           <div
             key={session.id}
             onClick={() => setActiveSession(session.id)}
@@ -316,9 +333,9 @@ export function PaperTradingDashboard() {
             )}
           </div>
         ))}
-        {sessions.length === 0 && (
+        {sessions.filter(s => sessionFilter === 'all' || s.status === sessionFilter).length === 0 && (
           <div className="col-span-full text-center py-12 text-neutral-400">
-            No hay sesiones de paper trading. Crea una para empezar.
+            {sessions.length === 0 ? 'No hay sesiones de paper trading. Crea una para empezar.' : `No hay sesiones ${sessionFilter === 'active' ? 'activas' : 'detenidas'}.`}
           </div>
         )}
       </div>
