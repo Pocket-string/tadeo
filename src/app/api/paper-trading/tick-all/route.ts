@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getCandles } from '@/features/market-data/services/marketDataService'
-import { calculateATR } from '@/features/indicators/services/indicatorEngine'
+import { calculateATR, calculateEMA } from '@/features/indicators/services/indicatorEngine'
 import { getLivePrice } from '@/features/paper-trading/services/priceService'
 import {
   precomputeIndicators,
@@ -48,6 +48,9 @@ export async function POST(req: NextRequest) {
   if (!isAuthorized) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  // Reset per-invocation caches
+  htfBiasCache = new Map()
 
   const supabase = getServiceClient()
   const results: TickResult[] = []
@@ -247,7 +250,8 @@ export async function POST(req: NextRequest) {
         ? price + currentATR * tpMult
         : price - currentATR * tpMult
 
-      await supabase
+      // INSERT with conflict guard — unique index prevents duplicate open trades
+      const { data: inserted } = await supabase
         .from('paper_trades')
         .insert({
           user_id: session.user_id,
@@ -261,6 +265,10 @@ export async function POST(req: NextRequest) {
           stop_loss: stopLoss,
           take_profit: takeProfit,
         })
+        .select('id')
+
+      // If conflict (duplicate open trade), skip silently
+      if (!inserted || inserted.length === 0) continue
 
       results.push({
         sessionId: session.id,
@@ -319,6 +327,9 @@ async function updateSessionStats(
 
 // ATR cache to avoid redundant candle fetches
 const atrCache = new Map<string, number | null>()
+
+// HTF bias cache — keyed by `symbol:htf` — reset each POST invocation
+let htfBiasCache = new Map<string, 'bull' | 'bear' | 'neutral'>()
 
 async function getCachedATR(key: string, symbol: string, timeframe: Timeframe): Promise<number | null> {
   if (atrCache.has(key)) return atrCache.get(key)!
@@ -399,7 +410,49 @@ async function checkSignalFull(
   if (composite.direction === 'neutral') return null
 
   const signal: 'buy' | 'sell' = composite.direction === 'long' ? 'buy' : 'sell'
+
+  // Higher-timeframe trend filter — block signals against 4h/1d trend
+  const htfBias = await getCachedHTFBias(symbol, timeframe)
+  if (htfBias === 'bull' && signal === 'sell') return null
+  if (htfBias === 'bear' && signal === 'buy') return null
+
   const reason = composite.activeSystems.join(' + ')
 
   return { signal, atr: ctx.atr, reason }
+}
+
+/**
+ * Determine trend bias from a higher timeframe (4h for intraday, 1d for 4h sessions).
+ * Returns 'bull' / 'bear' / 'neutral' based on price position relative to EMA50.
+ */
+async function getCachedHTFBias(symbol: string, currentTf: Timeframe): Promise<'bull' | 'bear' | 'neutral'> {
+  const htf: Timeframe = (currentTf === '4h' || currentTf === '1d') ? '1d' : '4h'
+  const key = `${symbol}:${htf}`
+  if (htfBiasCache.has(key)) return htfBiasCache.get(key)!
+
+  const bias = await computeHTFBias(symbol, htf)
+  htfBiasCache.set(key, bias)
+  return bias
+}
+
+async function computeHTFBias(symbol: string, htf: Timeframe): Promise<'bull' | 'bear' | 'neutral'> {
+  try {
+    const endDate = new Date().toISOString()
+    const startDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString()
+    const candles = await getCandles({ symbol, timeframe: htf, startDate, endDate, limit: 60 })
+    if (candles.length < 50) return 'neutral'
+
+    const ema50 = calculateEMA(candles, 50)
+    if (ema50.length === 0) return 'neutral'
+
+    const lastClose = candles[candles.length - 1].close
+    const lastEMA = ema50[ema50.length - 1].value
+    const diff = (lastClose - lastEMA) / lastEMA
+
+    if (diff > 0.005) return 'bull'   // >0.5% above EMA50
+    if (diff < -0.005) return 'bear'  // >0.5% below EMA50
+    return 'neutral'
+  } catch {
+    return 'neutral'
+  }
 }

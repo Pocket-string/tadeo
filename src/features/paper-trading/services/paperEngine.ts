@@ -3,7 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { getCandles } from '@/features/market-data/services/marketDataService'
-import { calculateATR } from '@/features/indicators/services/indicatorEngine'
+import { calculateATR, calculateEMA } from '@/features/indicators/services/indicatorEngine'
 import {
   precomputeIndicators,
   buildContext,
@@ -216,7 +216,8 @@ export async function tickPaperSession(sessionId: string): Promise<{
     ? currentPrice.price + currentATR * tpMult
     : currentPrice.price - currentATR * tpMult
 
-  const { data: newTrade, error: tradeErr } = await supabase
+  // INSERT with conflict guard — unique index prevents duplicate open trades per session
+  const { data: newTrades } = await supabase
     .from('paper_trades')
     .insert({
       user_id: user.id,
@@ -231,10 +232,11 @@ export async function tickPaperSession(sessionId: string): Promise<{
       take_profit: takeProfit,
     })
     .select()
-    .single()
 
-  if (tradeErr) throw new Error(`Failed to open trade: ${tradeErr.message}`)
-  return { action: signal, trade: newTrade as PaperTrade, reason: `${signalResult.reason} at ${currentPrice.price}` }
+  if (!newTrades || newTrades.length === 0) {
+    return { action: 'hold', reason: 'Duplicate trade blocked by index' }
+  }
+  return { action: signal, trade: newTrades[0] as PaperTrade, reason: `${signalResult.reason} at ${currentPrice.price}` }
 }
 
 async function closePaperTrade(tradeId: string, exitPrice: number, reason: string): Promise<PaperTrade> {
@@ -384,7 +386,35 @@ async function checkSignalFull(
   if (composite.direction === 'neutral') return null
 
   const signal: 'buy' | 'sell' = composite.direction === 'long' ? 'buy' : 'sell'
+
+  // Higher-timeframe trend filter — block signals against 4h/1d trend
+  const htfBias = await computeHTFBias(symbol, (timeframe === '4h' || timeframe === '1d') ? '1d' : '4h')
+  if (htfBias === 'bull' && signal === 'sell') return null
+  if (htfBias === 'bear' && signal === 'buy') return null
+
   const reason = composite.activeSystems.join(' + ')
 
   return { signal, atr: ctx.atr, reason }
+}
+
+async function computeHTFBias(symbol: string, htf: Timeframe): Promise<'bull' | 'bear' | 'neutral'> {
+  try {
+    const endDate = new Date().toISOString()
+    const startDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString()
+    const candles = await getCandles({ symbol, timeframe: htf, startDate, endDate, limit: 60 })
+    if (candles.length < 50) return 'neutral'
+
+    const ema50 = calculateEMA(candles, 50)
+    if (ema50.length === 0) return 'neutral'
+
+    const lastClose = candles[candles.length - 1].close
+    const lastEMA = ema50[ema50.length - 1].value
+    const diff = (lastClose - lastEMA) / lastEMA
+
+    if (diff > 0.005) return 'bull'   // >0.5% above EMA50
+    if (diff < -0.005) return 'bear'  // >0.5% below EMA50
+    return 'neutral'
+  } catch {
+    return 'neutral'
+  }
 }
