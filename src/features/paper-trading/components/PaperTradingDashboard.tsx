@@ -222,8 +222,8 @@ export function PaperTradingDashboard() {
         </div>
       )}
 
-      {/* Server Cron Status */}
-      <div className="bg-white rounded-2xl shadow-card p-4">
+      {/* Server Cron Status + Recent Activity */}
+      <div className="bg-white rounded-2xl shadow-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h3 className="font-semibold text-neutral-800">Auto-Tick</h3>
@@ -234,6 +234,30 @@ export function PaperTradingDashboard() {
           </div>
           <span className="text-xs text-neutral-400">Gestionado por servidor</span>
         </div>
+        {/* Recent closed trades across all sessions — acts as activity log */}
+        {sessions.length > 0 && dashboard?.closedTrades && dashboard.closedTrades.length > 0 && (
+          <div className="border-t pt-3">
+            <p className="text-xs text-neutral-500 mb-2">Últimas operaciones cerradas</p>
+            <div className="space-y-1.5">
+              {[...dashboard.closedTrades].reverse().slice(0, 5).map(trade => (
+                <div key={trade.id} className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className={`px-1.5 py-0.5 rounded font-medium ${trade.type === 'buy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      {trade.type.toUpperCase()}
+                    </span>
+                    <span className="text-neutral-500">{trade.exit_reason}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-neutral-400">{new Date(trade.exit_time ?? '').toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}</span>
+                    <span className={`font-medium ${Number(trade.pnl) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {Number(trade.pnl) >= 0 ? '+' : ''}${Number(trade.pnl).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Sessions List */}
