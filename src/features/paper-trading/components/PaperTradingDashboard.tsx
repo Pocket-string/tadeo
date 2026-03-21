@@ -13,10 +13,18 @@ import {
   getPaperProposals,
   respondToProposal,
   getSignalAttribution,
+  getAgentLog,
 } from '@/actions/paper-trading'
-import type { PaperSession, PaperDashboardData, LivePrice } from '../types'
+import type { PaperSession, PaperDashboardData } from '../types'
 import type { MonitorReport, DivergenceAlert } from '../services/aiMonitor'
-import { StrategyHealthIndicator, getStrategyDescription, METRIC_TOOLTIPS } from './StrategyHealthIndicator'
+import { StrategyHealthIndicator, METRIC_TOOLTIPS } from './StrategyHealthIndicator'
+import {
+  formatExitReason,
+  formatAgentEventType,
+  formatDuration,
+  gradeColor,
+  drawdownColor,
+} from '../utils/formatters'
 
 export function PaperTradingDashboard() {
   const [sessions, setSessions] = useState<PaperSession[]>([])
@@ -25,6 +33,7 @@ export function PaperTradingDashboard() {
   const [monitor, setMonitor] = useState<MonitorReport | null>(null)
   const [strategies, setStrategies] = useState<{ id: string; name: string }[]>([])
   const [recentTrades, setRecentTrades] = useState<import('../types').PaperTrade[]>([])
+  const [agentLog, setAgentLog] = useState<Awaited<ReturnType<typeof getAgentLog>>>([])
   const [loading, setLoading] = useState(true)
   const [tickLoading, setTickLoading] = useState(false)
   const [showNewSession, setShowNewSession] = useState(false)
@@ -33,6 +42,7 @@ export function PaperTradingDashboard() {
   const [proposals, setProposals] = useState<Awaited<ReturnType<typeof getPaperProposals>>>([])
   const [attribution, setAttribution] = useState<Awaited<ReturnType<typeof getSignalAttribution>>>([])
   const [respondingProposal, setRespondingProposal] = useState<string | null>(null)
+  const [attributionWindow, setAttributionWindow] = useState<15 | 30 | 50>(15)
 
   // New session form
   const [newStrategyId, setNewStrategyId] = useState('')
@@ -42,13 +52,15 @@ export function PaperTradingDashboard() {
 
   const loadSessions = useCallback(async () => {
     try {
-      const [sess, strats, recent, props] = await Promise.all([
-        getPaperSessions(), getStrategiesForPaper(), getRecentTrades(8), getPaperProposals()
+      const [sess, strats, recent, props, log] = await Promise.all([
+        getPaperSessions(), getStrategiesForPaper(), getRecentTrades(8),
+        getPaperProposals(), getAgentLog(20)
       ])
       setSessions(sess)
       setStrategies(strats)
       setRecentTrades(recent)
       setProposals(props)
+      setAgentLog(log)
       if (strats.length > 0 && !newStrategyId) setNewStrategyId(strats[0].id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error loading sessions')
@@ -57,18 +69,18 @@ export function PaperTradingDashboard() {
     }
   }, [newStrategyId])
 
-  const loadDashboard = useCallback(async (sessionId: string) => {
+  const loadDashboard = useCallback(async (sessionId: string, window = attributionWindow) => {
     try {
       const [data, attr] = await Promise.all([
         getPaperDashboard(sessionId),
-        getSignalAttribution(sessionId, 15),
+        getSignalAttribution(sessionId, window),
       ])
       setDashboard(data)
       setAttribution(attr)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error loading dashboard')
     }
-  }, [])
+  }, [attributionWindow])
 
   useEffect(() => {
     loadSessions()
@@ -78,7 +90,7 @@ export function PaperTradingDashboard() {
     if (activeSession) loadDashboard(activeSession)
   }, [activeSession, loadDashboard])
 
-  // Auto-refresh price + session cards every 15 seconds
+  // Auto-refresh every 15 seconds when active session is running
   useEffect(() => {
     if (!activeSession || !dashboard?.session || dashboard.session.status !== 'active') return
     const interval = setInterval(() => {
@@ -111,9 +123,7 @@ export function PaperTradingDashboard() {
     try {
       await stopSession(id)
       await loadSessions()
-      if (activeSession === id) {
-        await loadDashboard(id)
-      }
+      if (activeSession === id) await loadDashboard(id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error stopping session')
     }
@@ -124,13 +134,8 @@ export function PaperTradingDashboard() {
     setTickLoading(true)
     setError(null)
     try {
-      const result = await tickSession(activeSession)
-      await loadDashboard(activeSession)
-      await loadSessions()
-      // Show result briefly
-      if (result.action !== 'hold') {
-        setError(null)
-      }
+      await tickSession(activeSession)
+      await Promise.all([loadDashboard(activeSession), loadSessions()])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error executing tick')
     } finally {
@@ -161,9 +166,9 @@ export function PaperTradingDashboard() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
-          {error}
-          <button onClick={() => setError(null)} className="ml-2 font-bold">×</button>
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="ml-2 font-bold text-red-500 hover:text-red-700">×</button>
         </div>
       )}
 
@@ -239,11 +244,11 @@ export function PaperTradingDashboard() {
         </div>
       )}
 
-      {/* Server Cron Status + Recent Activity */}
+      {/* Agent Decision Feed (Auto-Tick panel) */}
       <div className="bg-white rounded-2xl shadow-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h3 className="font-semibold text-neutral-800">Auto-Tick</h3>
+            <h3 className="font-semibold text-neutral-800">🤖 Agente — Decisiones</h3>
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
               <span className="text-xs text-green-600 font-medium">Cron activo — cada 1 min</span>
@@ -251,8 +256,38 @@ export function PaperTradingDashboard() {
           </div>
           <span className="text-xs text-neutral-400">Gestionado por servidor</span>
         </div>
-        {/* Global activity log — last 8 closed trades across all sessions */}
-        {recentTrades.length > 0 && (
+
+        {/* Agent log — last decisions */}
+        {agentLog.length > 0 ? (
+          <div className="border-t pt-3 space-y-1.5">
+            <p className="text-xs text-neutral-500 mb-2">Últimas {agentLog.length} decisiones del agente</p>
+            {agentLog.slice(0, 10).map(entry => {
+              const { label, color } = formatAgentEventType(entry.event_type)
+              const isAction = ['buy', 'sell', 'close'].includes(entry.event_type)
+              return (
+                <div key={entry.id} className={`flex items-start justify-between text-xs gap-2 py-1 ${isAction ? 'border-l-2 border-primary-300 pl-2 -ml-2' : ''}`}>
+                  <div className="flex items-start gap-2 min-w-0">
+                    <span className="text-neutral-300 shrink-0 font-mono tabular-nums">
+                      {new Date(entry.created_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                    <div className="min-w-0">
+                      <span className="text-neutral-600 font-medium">{entry.symbol} {entry.timeframe}</span>
+                      <span className={`ml-2 font-semibold ${color}`}>{label}</span>
+                      {entry.reason && (
+                        <span className="ml-1 text-neutral-400 truncate block max-w-xs">{entry.reason}</span>
+                      )}
+                    </div>
+                  </div>
+                  {entry.pnl !== null && (
+                    <span className={`shrink-0 font-medium tabular-nums ${entry.pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {entry.pnl >= 0 ? '+' : ''}${Number(entry.pnl).toFixed(2)}
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        ) : recentTrades.length > 0 ? (
           <div className="border-t pt-3">
             <p className="text-xs text-neutral-500 mb-2">Últimas operaciones cerradas</p>
             <div className="space-y-1.5">
@@ -263,7 +298,7 @@ export function PaperTradingDashboard() {
                       {trade.type.toUpperCase()}
                     </span>
                     <span className="text-neutral-600 font-medium">{trade.symbol}</span>
-                    <span className="text-neutral-400">{trade.exit_reason}</span>
+                    <span className="text-neutral-400">{formatExitReason(trade.exit_reason)}</span>
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-neutral-400">{new Date(trade.exit_time ?? '').toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}</span>
@@ -275,54 +310,115 @@ export function PaperTradingDashboard() {
               ))}
             </div>
           </div>
+        ) : (
+          <p className="text-xs text-neutral-400 border-t pt-3">No hay actividad reciente. El agente comenzará a operar en el próximo tick.</p>
         )}
       </div>
 
       {/* Agentic Proposals — scale-up suggestions from the evaluator */}
       {proposals.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {proposals.map(p => {
-            const v = p.proposed_value as { symbol?: string; timeframe?: string; proposed_capital?: number; current_capital?: number; grade?: string; win_rate?: string; sharpe?: string }
+            const v = p.proposed_value as {
+              symbol?: string; timeframe?: string
+              proposed_capital?: number; current_capital?: number
+              grade?: string; win_rate?: string; sharpe?: string
+              max_dd?: string; days_sustained?: string; total_trades?: number
+              expected_gain_per_trade?: string; risk_per_trade?: string
+            }
             return (
-              <div key={p.id} className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-amber-600 font-semibold text-sm">Propuesta del Sistema</span>
-                    <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-xs font-medium">Grado {v.grade}</span>
+              <div key={p.id} className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
+                {/* Header */}
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-amber-700 font-semibold text-sm">🤖 Recomendación del Sistema</span>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${gradeColor(v.grade ?? null)}`}>
+                        Grado {v.grade}
+                      </span>
+                    </div>
+                    {v.symbol && (
+                      <p className="text-xs text-neutral-500">{v.symbol} {v.timeframe}</p>
+                    )}
                   </div>
-                  <p className="text-sm text-neutral-700">{p.reason}</p>
-                  {v.proposed_capital && v.current_capital && (
-                    <p className="text-xs text-neutral-500 mt-1">
-                      Capital: ${v.current_capital} → <span className="font-semibold text-green-700">${v.proposed_capital}</span>
-                      {v.win_rate && ` · WR: ${v.win_rate}%`}{v.sharpe && ` · Sharpe: ${v.sharpe}`}
-                    </p>
-                  )}
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      disabled={respondingProposal === p.id}
+                      onClick={async () => {
+                        setRespondingProposal(p.id)
+                        await respondToProposal(p.id, 'approved')
+                        setProposals(prev => prev.filter(x => x.id !== p.id))
+                        await loadSessions()
+                        setRespondingProposal(null)
+                      }}
+                      className="px-4 py-2 bg-green-600 text-white rounded-xl text-xs font-semibold hover:bg-green-700 transition disabled:opacity-50"
+                    >
+                      {respondingProposal === p.id ? '…' : 'Aprobar'}
+                    </button>
+                    <button
+                      disabled={respondingProposal === p.id}
+                      onClick={async () => {
+                        setRespondingProposal(p.id)
+                        await respondToProposal(p.id, 'rejected')
+                        setProposals(prev => prev.filter(x => x.id !== p.id))
+                        setRespondingProposal(null)
+                      }}
+                      className="px-4 py-2 bg-neutral-200 text-neutral-600 rounded-xl text-xs font-semibold hover:bg-neutral-300 transition disabled:opacity-50"
+                    >
+                      Rechazar
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-2 shrink-0">
-                  <button
-                    disabled={respondingProposal === p.id}
-                    onClick={async () => {
-                      setRespondingProposal(p.id)
-                      await respondToProposal(p.id, 'approved')
-                      setProposals(prev => prev.filter(x => x.id !== p.id))
-                      setRespondingProposal(null)
-                    }}
-                    className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 transition disabled:opacity-50"
-                  >
-                    Aprobar
-                  </button>
-                  <button
-                    disabled={respondingProposal === p.id}
-                    onClick={async () => {
-                      setRespondingProposal(p.id)
-                      await respondToProposal(p.id, 'rejected')
-                      setProposals(prev => prev.filter(x => x.id !== p.id))
-                      setRespondingProposal(null)
-                    }}
-                    className="px-3 py-1.5 bg-neutral-200 text-neutral-600 rounded-lg text-xs font-medium hover:bg-neutral-300 transition disabled:opacity-50"
-                  >
-                    Rechazar
-                  </button>
+
+                {/* Capital change */}
+                {v.proposed_capital && v.current_capital && (
+                  <div className="flex items-center gap-3 mb-4 p-3 bg-white rounded-xl border border-amber-100">
+                    <div className="text-center">
+                      <p className="text-xs text-neutral-400">Capital actual</p>
+                      <p className="text-lg font-bold text-neutral-700">${v.current_capital.toLocaleString()}</p>
+                    </div>
+                    <div className="text-2xl text-amber-400 flex-1 text-center">→</div>
+                    <div className="text-center">
+                      <p className="text-xs text-neutral-400">Capital propuesto</p>
+                      <p className="text-lg font-bold text-green-700">${v.proposed_capital.toLocaleString()}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Agent reasoning */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <p className="text-neutral-500 font-semibold mb-1.5">Por qué lo recomiendo</p>
+                    <ul className="space-y-1 text-neutral-700">
+                      {v.days_sustained && (
+                        <li>• Grado {v.grade} sostenido {v.days_sustained} días consecutivos</li>
+                      )}
+                      {v.win_rate && (
+                        <li>• Win Rate: <span className="font-semibold text-green-700">{v.win_rate}%</span>
+                          {v.total_trades && ` (${v.total_trades} trades)`}
+                        </li>
+                      )}
+                      {v.sharpe && (
+                        <li>• Sharpe: <span className="font-semibold">{v.sharpe}</span> — retorno ajustado por riesgo</li>
+                      )}
+                      {v.max_dd && (
+                        <li>• Max Drawdown: <span className={`font-semibold ${drawdownColor(Number(v.max_dd) / 100)}`}>{v.max_dd}%</span> — dentro del rango</li>
+                      )}
+                    </ul>
+                  </div>
+                  {(v.expected_gain_per_trade || v.risk_per_trade) && (
+                    <div>
+                      <p className="text-neutral-500 font-semibold mb-1.5">Qué espero si escalas</p>
+                      <ul className="space-y-1 text-neutral-700">
+                        {v.expected_gain_per_trade && (
+                          <li>• Ganancia esperada por trade: <span className="font-semibold text-green-700">+${v.expected_gain_per_trade}</span></li>
+                        )}
+                        {v.risk_per_trade && (
+                          <li>• Riesgo por trade: <span className="font-semibold text-amber-700">${v.risk_per_trade}</span></li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               </div>
             )
@@ -348,59 +444,87 @@ export function PaperTradingDashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {sessions.filter(s => sessionFilter === 'all' || s.status === sessionFilter).map(session => (
-          <div
-            key={session.id}
-            onClick={() => setActiveSession(session.id)}
-            className={`bg-white rounded-2xl shadow-card p-4 cursor-pointer transition border-2 ${
-              activeSession === session.id ? 'border-primary-500' : 'border-transparent hover:border-primary-200'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-2">
-              <span className="font-semibold text-neutral-800">{session.symbol}</span>
-              <div className="flex items-center gap-1.5">
-                {session.risk_tier && (
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                    session.risk_tier === 'conservative' ? 'bg-blue-100 text-blue-700' :
-                    session.risk_tier === 'aggressive' ? 'bg-red-100 text-red-700' :
-                    'bg-amber-100 text-amber-700'
-                  }`}>
-                    {session.risk_tier === 'conservative' ? 'CONS' : session.risk_tier === 'aggressive' ? 'AGR' : 'MOD'}
-                  </span>
+        {sessions.filter(s => sessionFilter === 'all' || s.status === sessionFilter).map(session => {
+          const winRate = session.total_trades > 0 ? session.winning_trades / session.total_trades : 0
+          const grade = (() => {
+            const tt = session.total_trades
+            const pnl = Number(session.net_pnl)
+            if (tt < 5) return null
+            if (winRate > 0.55 && pnl > 0 && tt >= 30) return 'A'
+            if (winRate > 0.50 && pnl > 0 && tt >= 20) return 'B'
+            if (winRate > 0.45 && pnl > 0 && tt >= 10) return 'C'
+            if (pnl > 0) return 'D'
+            return 'F'
+          })()
+          const maxDD = Number((session as PaperSession & { max_drawdown?: number }).max_drawdown ?? 0)
+
+          return (
+            <div
+              key={session.id}
+              onClick={() => setActiveSession(session.id)}
+              className={`bg-white rounded-2xl shadow-card p-4 cursor-pointer transition border-2 ${
+                activeSession === session.id ? 'border-primary-500' : 'border-transparent hover:border-primary-200'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-semibold text-neutral-800">{session.symbol}</span>
+                <div className="flex items-center gap-1.5">
+                  {/* Grade badge with color */}
+                  {grade && (
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${gradeColor(grade)}`}>
+                      {grade}
+                    </span>
+                  )}
+                  {session.risk_tier && (
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      session.risk_tier === 'conservative' ? 'bg-blue-100 text-blue-700' :
+                      session.risk_tier === 'aggressive' ? 'bg-red-100 text-red-700' :
+                      'bg-amber-100 text-amber-700'
+                    }`}>
+                      {session.risk_tier === 'conservative' ? 'CONS' : session.risk_tier === 'aggressive' ? 'AGR' : 'MOD'}
+                    </span>
+                  )}
+                  <StatusBadge status={session.status} />
+                </div>
+              </div>
+              <div className="mb-2">
+                <StrategyHealthIndicator
+                  grade={grade}
+                  winRate={winRate}
+                  totalTrades={session.total_trades}
+                  netPnl={Number(session.net_pnl)}
+                />
+              </div>
+              <div className="text-xs text-neutral-500 space-y-1">
+                <div>Timeframe: {session.timeframe}</div>
+                <div>Capital: ${Number(session.current_capital).toLocaleString()}</div>
+                <div className={`font-medium ${Number(session.net_pnl) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  PnL: {Number(session.net_pnl) >= 0 ? '+' : ''}${Number(session.net_pnl).toFixed(2)}
+                </div>
+                <div>Trades: {session.total_trades} ({session.winning_trades} ganados)</div>
+                {/* Max Drawdown badge — visible directly on card */}
+                {maxDD > 0 && (
+                  <div className={`font-medium ${drawdownColor(maxDD)}`}>
+                    Max DD: {(maxDD * 100).toFixed(1)}%
+                  </div>
                 )}
-                <StatusBadge status={session.status} />
               </div>
+              {session.status === 'active' && (
+                <button
+                  onClick={e => { e.stopPropagation(); handleStopSession(session.id) }}
+                  className="mt-3 w-full px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-medium hover:bg-red-200 transition"
+                >
+                  Detener Sesión
+                </button>
+              )}
             </div>
-            {/* Health indicator + strategy description */}
-            <div className="mb-2">
-              <StrategyHealthIndicator
-                grade={null}
-                winRate={session.total_trades > 0 ? session.winning_trades / session.total_trades : 0}
-                totalTrades={session.total_trades}
-                netPnl={Number(session.net_pnl)}
-              />
-            </div>
-            <div className="text-xs text-neutral-500 space-y-1">
-              <div>Timeframe: {session.timeframe}</div>
-              <div>Capital: ${Number(session.current_capital).toLocaleString()}</div>
-              <div className={`font-medium ${Number(session.net_pnl) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                PnL: {Number(session.net_pnl) >= 0 ? '+' : ''}${Number(session.net_pnl).toFixed(2)}
-              </div>
-              <div>Trades: {session.total_trades} ({session.winning_trades} ganados)</div>
-            </div>
-            {session.status === 'active' && (
-              <button
-                onClick={e => { e.stopPropagation(); handleStopSession(session.id) }}
-                className="mt-3 w-full px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-medium hover:bg-red-200 transition"
-              >
-                Detener Sesión
-              </button>
-            )}
-          </div>
-        ))}
+          )
+        })}
         {sessions.filter(s => sessionFilter === 'all' || s.status === sessionFilter).length === 0 && (
           <div className="col-span-full text-center py-12 text-neutral-400">
-            {sessions.length === 0 ? 'No hay sesiones de paper trading. Crea una para empezar.' : `No hay sesiones ${sessionFilter === 'active' ? 'activas' : 'detenidas'}.`}
+            {sessions.length === 0
+              ? 'No hay sesiones de paper trading. Crea una para empezar.'
+              : `No hay sesiones ${sessionFilter === 'active' ? 'activas' : 'detenidas'}.`}
           </div>
         )}
       </div>
@@ -410,7 +534,7 @@ export function PaperTradingDashboard() {
         <div className="space-y-4">
           {/* Controls */}
           {dashboard.session.status === 'active' && (
-            <div className="bg-white rounded-2xl shadow-card p-4 flex items-center gap-3">
+            <div className="bg-white rounded-2xl shadow-card p-4 flex flex-wrap items-center gap-3">
               <button
                 onClick={handleTick}
                 disabled={tickLoading}
@@ -429,7 +553,7 @@ export function PaperTradingDashboard() {
                   <div className="text-xs text-neutral-500">Precio Actual</div>
                   <div className="font-semibold text-neutral-800">${dashboard.currentPrice.price.toLocaleString()}</div>
                   <div className={`text-xs ${dashboard.currentPrice.change24h >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {dashboard.currentPrice.change24h >= 0 ? '+' : ''}{dashboard.currentPrice.change24h.toFixed(2)}%
+                    {dashboard.currentPrice.change24h >= 0 ? '+' : ''}{dashboard.currentPrice.change24h.toFixed(2)}% (24h)
                   </div>
                 </div>
               )}
@@ -457,7 +581,7 @@ export function PaperTradingDashboard() {
               tooltip={METRIC_TOOLTIPS.winRate}
             />
             <KPICard
-              label="Salud"
+              label="Salud (Grade)"
               value={(() => {
                 const wr = dashboard.session.total_trades > 0 ? dashboard.session.winning_trades / dashboard.session.total_trades : 0
                 const pnl = Number(dashboard.session.net_pnl)
@@ -478,7 +602,8 @@ export function PaperTradingDashboard() {
           {dashboard.openTrades.length > 0 && (
             <div className="bg-white rounded-2xl shadow-card p-4">
               <h3 className="font-semibold text-neutral-800 mb-3">Posiciones Abiertas</h3>
-              <div className="overflow-x-auto">
+              {/* Desktop table */}
+              <div className="hidden sm:block overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-xs text-neutral-500 border-b">
@@ -496,6 +621,7 @@ export function PaperTradingDashboard() {
                       const unrealizedPnl = trade.type === 'buy'
                         ? (currentP - Number(trade.entry_price)) * Number(trade.quantity)
                         : (Number(trade.entry_price) - currentP) * Number(trade.quantity)
+                      const pnlPct = unrealizedPnl / (Number(trade.entry_price) * Number(trade.quantity))
                       return (
                         <tr key={trade.id} className="border-b border-neutral-100">
                           <td className="py-2">
@@ -506,11 +632,12 @@ export function PaperTradingDashboard() {
                             </span>
                           </td>
                           <td className="text-right py-2">${Number(trade.entry_price).toLocaleString()}</td>
-                          <td className="text-right py-2">{Number(trade.quantity)}</td>
+                          <td className="text-right py-2">{Number(trade.quantity).toFixed(4)}</td>
                           <td className="text-right py-2 text-red-600">${Number(trade.stop_loss).toLocaleString()}</td>
                           <td className="text-right py-2 text-green-600">${Number(trade.take_profit).toLocaleString()}</td>
                           <td className={`text-right py-2 font-medium ${unrealizedPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                             {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toFixed(2)}
+                            <span className="text-xs ml-1 opacity-70">({(pnlPct * 100).toFixed(1)}%)</span>
                           </td>
                         </tr>
                       )
@@ -518,31 +645,89 @@ export function PaperTradingDashboard() {
                   </tbody>
                 </table>
               </div>
+              {/* Mobile cards */}
+              <div className="sm:hidden space-y-3">
+                {dashboard.openTrades.map(trade => {
+                  const currentP = dashboard.currentPrice?.price ?? Number(trade.entry_price)
+                  const unrealizedPnl = trade.type === 'buy'
+                    ? (currentP - Number(trade.entry_price)) * Number(trade.quantity)
+                    : (Number(trade.entry_price) - currentP) * Number(trade.quantity)
+                  return (
+                    <div key={trade.id} className="border border-neutral-100 rounded-xl p-3 text-xs space-y-1">
+                      <div className="flex justify-between">
+                        <span className={`px-2 py-0.5 rounded-full font-medium ${trade.type === 'buy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{trade.type.toUpperCase()}</span>
+                        <span className={`font-bold ${unrealizedPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-neutral-500">
+                        <span>Entrada: ${Number(trade.entry_price).toLocaleString()}</span>
+                        <span>Qty: {Number(trade.quantity).toFixed(4)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-red-600">SL: ${Number(trade.stop_loss).toLocaleString()}</span>
+                        <span className="text-green-600">TP: ${Number(trade.take_profit).toLocaleString()}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
 
-          {/* Signal Attribution Panel */}
+          {/* Signal Attribution Panel — Improved */}
           {attribution.length > 0 && (
             <div className="bg-white rounded-2xl shadow-card p-4">
-              <h3 className="font-semibold text-neutral-800 mb-3">Atribución de Señales <span className="text-xs font-normal text-neutral-400">(últimos 15 trades)</span></h3>
-              <div className="space-y-2">
-                {attribution.map(item => (
-                  <div key={item.system} className="flex items-center gap-3">
-                    <span className="text-xs text-neutral-600 w-32 shrink-0 font-mono">{item.system}</span>
-                    <div className="flex-1 bg-neutral-100 rounded-full h-2 overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${item.winRate >= 0.65 ? 'bg-green-500' : item.winRate >= 0.5 ? 'bg-amber-400' : 'bg-red-400'}`}
-                        style={{ width: `${Math.round(item.winRate * 100)}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-neutral-500 w-12 text-right">{Math.round(item.winRate * 100)}% WR</span>
-                    <span className={`text-xs font-bold w-8 text-right ${item.contribution === '+++' ? 'text-green-600' : item.contribution === '++' ? 'text-green-500' : item.contribution === '=' ? 'text-neutral-400' : 'text-red-500'}`}>
-                      {item.contribution}
-                    </span>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-neutral-800">Atribución de Señales</h3>
+                <div className="flex items-center gap-1">
+                  {([15, 30, 50] as const).map(w => (
+                    <button
+                      key={w}
+                      onClick={async () => {
+                        setAttributionWindow(w)
+                        if (activeSession) await loadDashboard(activeSession, w)
+                      }}
+                      className={`px-2 py-1 text-xs rounded-lg transition ${attributionWindow === w ? 'bg-primary-100 text-primary-700 font-medium' : 'text-neutral-400 hover:text-neutral-600'}`}
+                    >
+                      {w}
+                    </button>
+                  ))}
+                  <span className="text-xs text-neutral-400 ml-1">trades</span>
+                </div>
               </div>
-              <p className="text-xs text-neutral-400 mt-3">Solo trades con metadata de señal (nuevos desde hoy).</p>
+              <div className="space-y-2">
+                {attribution.map((item, i) => {
+                  const total = item.wins + item.losses
+                  const isTop = i === 0
+                  return (
+                    <div key={item.system} className={`flex items-center gap-3 ${isTop ? 'bg-green-50 rounded-lg px-2 py-1 -mx-2' : ''}`}>
+                      <span className="text-xs text-neutral-600 w-36 shrink-0 font-mono">{item.system}</span>
+                      <div className="flex-1 bg-neutral-100 rounded-full h-2 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${item.winRate >= 0.65 ? 'bg-green-500' : item.winRate >= 0.5 ? 'bg-amber-400' : 'bg-red-400'}`}
+                          style={{ width: `${Math.round(item.winRate * 100)}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-neutral-500 w-24 text-right tabular-nums">
+                        {Math.round(item.winRate * 100)}% <span className="text-neutral-300">({total})</span>
+                      </span>
+                      <span className={`text-xs font-bold w-8 text-right ${item.contribution === '+++' ? 'text-green-600' : item.contribution === '++' ? 'text-green-500' : item.contribution === '=' ? 'text-neutral-400' : 'text-red-500'}`}>
+                        {item.contribution}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+              {/* Legend */}
+              <div className="mt-3 pt-3 border-t flex flex-wrap gap-3 text-xs text-neutral-400">
+                <span><span className="text-green-600 font-bold">+++</span> WR ≥65%</span>
+                <span><span className="text-green-500 font-bold">++</span> WR ≥50%</span>
+                <span><span className="text-neutral-400 font-bold">=</span> WR ≥40%</span>
+                <span><span className="text-red-500 font-bold">−</span> WR &lt;40%</span>
+                <span className="ml-auto">El número entre () es el total de trades con esa señal.</span>
+              </div>
+              {attribution.length === 0 && (
+                <p className="text-xs text-neutral-400 mt-2">Solo trades con metadata de señal (generados desde hoy).</p>
+              )}
             </div>
           )}
 
@@ -558,21 +743,23 @@ export function PaperTradingDashboard() {
           {dashboard.closedTrades.length > 0 && (
             <div className="bg-white rounded-2xl shadow-card p-4">
               <h3 className="font-semibold text-neutral-800 mb-3">Historial de Trades ({dashboard.closedTrades.length})</h3>
-              <div className="overflow-x-auto max-h-64 overflow-y-auto">
+              {/* Desktop table */}
+              <div className="hidden sm:block overflow-x-auto max-h-72 overflow-y-auto">
                 <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-white">
+                  <thead className="sticky top-0 bg-white z-10">
                     <tr className="text-xs text-neutral-500 border-b">
                       <th className="text-left py-2">Tipo</th>
                       <th className="text-right py-2">Entrada</th>
                       <th className="text-right py-2">Salida</th>
+                      <th className="text-right py-2">Duración</th>
                       <th className="text-right py-2">PnL</th>
                       <th className="text-right py-2">%</th>
-                      <th className="text-left py-2">Razón</th>
+                      <th className="text-left py-2 pl-3">Razón</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[...dashboard.closedTrades].reverse().map(trade => (
-                      <tr key={trade.id} className="border-b border-neutral-100">
+                      <tr key={trade.id} className={`border-b border-neutral-100 ${Number(trade.pnl) > 0 ? 'hover:bg-green-50' : 'hover:bg-red-50'} transition`}>
                         <td className="py-2">
                           <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                             trade.type === 'buy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
@@ -582,17 +769,38 @@ export function PaperTradingDashboard() {
                         </td>
                         <td className="text-right py-2">${Number(trade.entry_price).toLocaleString()}</td>
                         <td className="text-right py-2">${Number(trade.exit_price).toLocaleString()}</td>
+                        <td className="text-right py-2 text-neutral-400 text-xs">
+                          {formatDuration(trade.entry_time, trade.exit_time)}
+                        </td>
                         <td className={`text-right py-2 font-medium ${Number(trade.pnl) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                           {Number(trade.pnl) >= 0 ? '+' : ''}${Number(trade.pnl).toFixed(2)}
                         </td>
                         <td className={`text-right py-2 ${Number(trade.pnl_pct) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                           {(Number(trade.pnl_pct) * 100).toFixed(1)}%
                         </td>
-                        <td className="py-2 text-xs text-neutral-500">{trade.exit_reason}</td>
+                        <td className="py-2 pl-3 text-xs text-neutral-500">{formatExitReason(trade.exit_reason)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+              {/* Mobile cards */}
+              <div className="sm:hidden space-y-2 max-h-96 overflow-y-auto">
+                {[...dashboard.closedTrades].reverse().map(trade => (
+                  <div key={trade.id} className={`border rounded-xl p-3 text-xs space-y-1 ${Number(trade.pnl) > 0 ? 'border-green-100' : 'border-red-100'}`}>
+                    <div className="flex justify-between items-center">
+                      <span className={`px-2 py-0.5 rounded-full font-medium ${trade.type === 'buy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{trade.type.toUpperCase()}</span>
+                      <span className={`font-bold ${Number(trade.pnl) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {Number(trade.pnl) >= 0 ? '+' : ''}${Number(trade.pnl).toFixed(2)} ({(Number(trade.pnl_pct) * 100).toFixed(1)}%)
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-neutral-500">
+                      <span>${Number(trade.entry_price).toLocaleString()} → ${Number(trade.exit_price).toLocaleString()}</span>
+                      <span>{formatDuration(trade.entry_time, trade.exit_time)}</span>
+                    </div>
+                    <div className="text-neutral-400">{formatExitReason(trade.exit_reason)}</div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -602,7 +810,6 @@ export function PaperTradingDashboard() {
             <div className="bg-white rounded-2xl shadow-card p-4 space-y-4">
               <h3 className="font-semibold text-neutral-800">AI Monitor Report</h3>
 
-              {/* Alerts */}
               {monitor.alerts.length > 0 ? (
                 <div className="space-y-2">
                   {monitor.alerts.map((alert, i) => (
@@ -615,7 +822,6 @@ export function PaperTradingDashboard() {
                 </div>
               )}
 
-              {/* Metrics Comparison */}
               {monitor.backtestMetrics && (
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
@@ -633,7 +839,6 @@ export function PaperTradingDashboard() {
                 </div>
               )}
 
-              {/* AI Analysis */}
               {monitor.aiAnalysis && (
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
                   <p className="text-xs text-blue-600 font-medium mb-1">Análisis AI</p>
@@ -641,7 +846,6 @@ export function PaperTradingDashboard() {
                 </div>
               )}
 
-              {/* Human Gate Warning */}
               {monitor.alerts.some(a => a.shouldPause) && (
                 <div className="bg-red-50 border-2 border-red-300 rounded-xl p-4">
                   <p className="font-semibold text-red-700 mb-1">ACCIÓN REQUERIDA</p>
@@ -713,31 +917,42 @@ function AlertCard({ alert }: { alert: DivergenceAlert }) {
 function EquityCurve({ data, initialCapital }: { data: { timestamp: string; pnl: number }[]; initialCapital: number }) {
   const width = 600
   const height = 200
-  const padding = 30
+  const padding = { top: 20, right: 20, bottom: 25, left: 60 }
 
   const values = data.map(d => initialCapital + d.pnl)
   const min = Math.min(initialCapital, ...values)
   const max = Math.max(initialCapital, ...values)
   const range = max - min || 1
 
-  const points = data.map((d, i) => {
-    const x = padding + (i / (data.length - 1)) * (width - padding * 2)
-    const y = height - padding - ((initialCapital + d.pnl - min) / range) * (height - padding * 2)
-    return `${x},${y}`
-  }).join(' ')
+  const toX = (i: number) => padding.left + (i / (data.length - 1)) * (width - padding.left - padding.right)
+  const toY = (v: number) => height - padding.bottom - ((v - min) / range) * (height - padding.top - padding.bottom)
 
-  const baseY = height - padding - ((initialCapital - min) / range) * (height - padding * 2)
+  const points = data.map((d, i) => `${toX(i)},${toY(initialCapital + d.pnl)}`).join(' ')
+  const baseY = toY(initialCapital)
+
+  // Drawdown area fill
+  const fillPoints = data.map((d, i) => `${toX(i)},${toY(initialCapital + d.pnl)}`).join(' ')
+  const lastX = toX(data.length - 1)
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-48">
+      {/* Drawdown fill (below baseline) */}
+      <polyline
+        fill="rgba(239,68,68,0.08)"
+        stroke="none"
+        points={`${toX(0)},${baseY} ${fillPoints} ${lastX},${baseY}`}
+      />
       {/* Baseline */}
-      <line x1={padding} y1={baseY} x2={width - padding} y2={baseY} stroke="#94a3b8" strokeWidth="1" strokeDasharray="4,4" />
+      <line x1={padding.left} y1={baseY} x2={width - padding.right} y2={baseY} stroke="#94a3b8" strokeWidth="1" strokeDasharray="4,4" />
       {/* Equity line */}
       <polyline fill="none" stroke="#6366f1" strokeWidth="2" points={points} />
-      {/* Labels */}
-      <text x={padding} y={height - 5} fontSize="10" fill="#94a3b8">{data[0].timestamp.split('T')[0]}</text>
-      <text x={width - padding} y={height - 5} fontSize="10" fill="#94a3b8" textAnchor="end">{data[data.length - 1].timestamp.split('T')[0]}</text>
-      <text x={5} y={baseY + 3} fontSize="10" fill="#94a3b8">${initialCapital.toLocaleString()}</text>
+      {/* Y axis labels */}
+      <text x={padding.left - 5} y={toY(max) + 4} fontSize="9" fill="#94a3b8" textAnchor="end">${max.toLocaleString()}</text>
+      <text x={padding.left - 5} y={toY(initialCapital) + 4} fontSize="9" fill="#94a3b8" textAnchor="end">${initialCapital.toLocaleString()}</text>
+      <text x={padding.left - 5} y={toY(min) + 4} fontSize="9" fill="#94a3b8" textAnchor="end">${min.toLocaleString()}</text>
+      {/* X axis labels */}
+      <text x={padding.left} y={height - 5} fontSize="9" fill="#94a3b8">{data[0].timestamp.split('T')[0]}</text>
+      <text x={width - padding.right} y={height - 5} fontSize="9" fill="#94a3b8" textAnchor="end">{data[data.length - 1].timestamp.split('T')[0]}</text>
     </svg>
   )
 }

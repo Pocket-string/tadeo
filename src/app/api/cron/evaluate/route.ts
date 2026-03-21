@@ -144,6 +144,7 @@ export async function POST(req: NextRequest) {
         await supabase.from('paper_sessions').update({
           status: 'stopped',
           stopped_at: new Date().toISOString(),
+          max_drawdown: maxDD,
         }).eq('id', session.id)
 
         // Retire strategy
@@ -178,6 +179,14 @@ export async function POST(req: NextRequest) {
       } else if (grade === 'A' && daysSinceStart >= 7) {
         // Propose capital scale-up for Grade A sessions sustained 7+ days
         const proposedCapital = Math.round(Number(session.current_capital) * 2)
+        const riskPct = session.risk_tier === 'conservative' ? 0.01 : session.risk_tier === 'aggressive' ? 0.07 : 0.03
+        const avgWinTrade = grossProfit / (winners.length || 1)
+        const expectedGainAtScale = avgWinTrade * (proposedCapital / Number(session.current_capital))
+        const riskPerTrade = proposedCapital * riskPct
+
+        // Persist max_drawdown to sessions table for UI visibility
+        await supabase.from('paper_sessions').update({ max_drawdown: maxDD }).eq('id', session.id)
+
         const { data: existingProposal } = await supabase
           .from('paper_session_proposals')
           .select('id')
@@ -199,6 +208,11 @@ export async function POST(req: NextRequest) {
               grade,
               sharpe: sharpe.toFixed(2),
               win_rate: (winRate * 100).toFixed(0),
+              max_dd: (maxDD * 100).toFixed(1),
+              days_sustained: daysSinceStart.toFixed(0),
+              total_trades: totalTrades,
+              expected_gain_per_trade: expectedGainAtScale.toFixed(2),
+              risk_per_trade: riskPerTrade.toFixed(2),
             },
             reason: `Grade A sostenido ${daysSinceStart.toFixed(0)} días. WR:${(winRate * 100).toFixed(0)}% Sharpe:${sharpe.toFixed(2)}`,
           })
@@ -216,6 +230,14 @@ export async function POST(req: NextRequest) {
       } else if (grade === 'B' && daysSinceStart >= 7 && totalTrades >= 20) {
         // Propose 50% scale-up for Grade B sessions with 20+ trades sustained 7+ days
         const proposedCapital = Math.round(Number(session.current_capital) * 1.5)
+        const riskPct = session.risk_tier === 'conservative' ? 0.01 : session.risk_tier === 'aggressive' ? 0.07 : 0.03
+        const avgWinTrade = grossProfit / (winners.length || 1)
+        const expectedGainAtScale = avgWinTrade * (proposedCapital / Number(session.current_capital))
+        const riskPerTrade = proposedCapital * riskPct
+
+        // Persist max_drawdown to sessions table for UI visibility
+        await supabase.from('paper_sessions').update({ max_drawdown: maxDD }).eq('id', session.id)
+
         const { data: existingProposal } = await supabase
           .from('paper_session_proposals')
           .select('id')
@@ -237,6 +259,11 @@ export async function POST(req: NextRequest) {
               grade,
               sharpe: sharpe.toFixed(2),
               win_rate: (winRate * 100).toFixed(0),
+              max_dd: (maxDD * 100).toFixed(1),
+              days_sustained: daysSinceStart.toFixed(0),
+              total_trades: totalTrades,
+              expected_gain_per_trade: expectedGainAtScale.toFixed(2),
+              risk_per_trade: riskPerTrade.toFixed(2),
             },
             reason: `Grade B, ${totalTrades} trades, ${daysSinceStart.toFixed(0)} días. WR:${(winRate * 100).toFixed(0)}% Sharpe:${sharpe.toFixed(2)}`,
           })

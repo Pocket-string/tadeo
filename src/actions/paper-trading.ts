@@ -143,11 +143,31 @@ export async function respondToProposal(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
+  // Fetch proposal before updating status (to apply capital change if approved)
+  const { data: proposal } = await supabase
+    .from('paper_session_proposals')
+    .select('proposal_type, proposed_value, session_id')
+    .eq('id', proposalId)
+    .eq('user_id', user.id)
+    .single()
+
   await supabase
     .from('paper_session_proposals')
     .update({ status: response, responded_at: new Date().toISOString() })
     .eq('id', proposalId)
     .eq('user_id', user.id)
+
+  // If approved and scale_up — apply the capital change to the session
+  if (response === 'approved' && proposal?.proposal_type === 'scale_up') {
+    const v = proposal.proposed_value as { proposed_capital?: number }
+    if (v?.proposed_capital) {
+      await supabase
+        .from('paper_sessions')
+        .update({ current_capital: v.proposed_capital })
+        .eq('id', proposal.session_id)
+        .eq('user_id', user.id)
+    }
+  }
 }
 
 // ─── Signal Attribution: which signal systems are winning/losing ──────────────
@@ -196,6 +216,44 @@ export async function getSignalAttribution(sessionId: string, limit = 15): Promi
       return { system, wins: stats.wins, losses: stats.losses, winRate, contribution }
     })
     .sort((a, b) => b.winRate - a.winRate)
+}
+
+export async function getAgentLog(limit = 20): Promise<{
+  id: string
+  session_id: string
+  symbol: string
+  timeframe: string
+  event_type: string
+  reason: string | null
+  price: number | null
+  pnl: number | null
+  created_at: string
+}[]> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  // Get session IDs for this user
+  const { data: userSessions } = await supabase
+    .from('paper_sessions')
+    .select('id')
+    .eq('user_id', user.id)
+
+  if (!userSessions || userSessions.length === 0) return []
+
+  const sessionIds = userSessions.map(s => s.id)
+
+  const { data } = await supabase
+    .from('paper_agent_log')
+    .select('*')
+    .in('session_id', sessionIds)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  return (data ?? []) as {
+    id: string; session_id: string; symbol: string; timeframe: string
+    event_type: string; reason: string | null; price: number | null; pnl: number | null; created_at: string
+  }[]
 }
 
 export async function getStrategiesForPaper(): Promise<{ id: string; name: string; symbol?: string }[]> {

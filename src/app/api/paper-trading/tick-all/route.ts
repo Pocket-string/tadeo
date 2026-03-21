@@ -27,6 +27,7 @@ function getServiceClient() {
 interface TickResult {
   sessionId: string
   symbol: string
+  timeframe: string
   riskTier: string
   action: string
   reason: string
@@ -134,6 +135,7 @@ export async function POST(req: NextRequest) {
           results.push({
             sessionId: session.id,
             symbol: session.symbol,
+            timeframe: session.timeframe,
             riskTier,
             action: 'close',
             reason: `${exitReason} at ${exitPrice.toFixed(2)}`,
@@ -163,6 +165,7 @@ export async function POST(req: NextRequest) {
               results.push({
                 sessionId: session.id,
                 symbol: session.symbol,
+                timeframe: session.timeframe,
                 riskTier,
                 action: 'trail',
                 reason: `Trailing SL raised to ${newTrailSL.toFixed(2)}`,
@@ -181,6 +184,7 @@ export async function POST(req: NextRequest) {
               results.push({
                 sessionId: session.id,
                 symbol: session.symbol,
+                timeframe: session.timeframe,
                 riskTier,
                 action: 'trail',
                 reason: `Trailing SL lowered to ${newTrailSL.toFixed(2)}`,
@@ -194,6 +198,7 @@ export async function POST(req: NextRequest) {
         results.push({
           sessionId: session.id,
           symbol: session.symbol,
+          timeframe: session.timeframe,
           riskTier,
           action: 'hold',
           reason: `Position open: ${trade.type} @ ${trade.entry_price}`,
@@ -213,9 +218,10 @@ export async function POST(req: NextRequest) {
         results.push({
           sessionId: session.id,
           symbol: session.symbol,
+          timeframe: session.timeframe,
           riskTier,
-          action: 'hold',
-          reason: 'No signal',
+          action: 'no_signal',
+          reason: 'Sin señal',
           price,
         })
         continue
@@ -235,9 +241,10 @@ export async function POST(req: NextRequest) {
         results.push({
           sessionId: session.id,
           symbol: session.symbol,
+          timeframe: session.timeframe,
           riskTier,
           action: 'hold',
-          reason: 'Insufficient capital',
+          reason: 'Capital insuficiente',
           price,
         })
         continue
@@ -274,6 +281,7 @@ export async function POST(req: NextRequest) {
       results.push({
         sessionId: session.id,
         symbol: session.symbol,
+        timeframe: session.timeframe,
         riskTier,
         action: signal,
         reason: `[${riskTier}] ${signalReason} | SL:${stopLoss.toFixed(2)} TP:${takeProfit.toFixed(2)} Qty:${quantity.toFixed(4)}`,
@@ -283,11 +291,26 @@ export async function POST(req: NextRequest) {
       results.push({
         sessionId: session.id,
         symbol: session.symbol,
+        timeframe: session.timeframe,
         riskTier,
         action: 'error',
         reason: err instanceof Error ? err.message : 'Unknown error',
       })
     }
+  }
+
+  // Log all agent decisions to paper_agent_log (non-blocking)
+  const logsToInsert = results.map(r => ({
+    session_id: r.sessionId,
+    symbol: r.symbol,
+    timeframe: r.timeframe,
+    event_type: r.action,
+    reason: r.reason,
+    price: r.price ?? null,
+    pnl: r.pnl ?? null,
+  }))
+  if (logsToInsert.length > 0) {
+    supabase.from('paper_agent_log').insert(logsToInsert).then(() => { /* non-blocking */ })
   }
 
   return NextResponse.json({

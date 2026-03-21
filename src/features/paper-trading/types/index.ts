@@ -46,6 +46,7 @@ export interface PaperSession {
   winning_trades: number
   net_pnl: number
   risk_tier: RiskTier | null
+  max_drawdown: number | null
   started_at: string
   stopped_at: string | null
   created_at: string

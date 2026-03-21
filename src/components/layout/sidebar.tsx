@@ -32,6 +32,11 @@ export function Sidebar() {
   const [userRole, setUserRole] = useState<UserRole>('trader')
   const [userName, setUserName] = useState<string>('')
   const [isLoading, setIsLoading] = useState(true)
+  const [systemStatus, setSystemStatus] = useState<{
+    activeSessions: number
+    cronHealthy: boolean
+    minutesSinceLastTrade: number | null
+  } | null>(null)
 
   useEffect(() => {
     const fetchUserRole = async () => {
@@ -54,6 +59,24 @@ export function Sidebar() {
     }
 
     fetchUserRole()
+  }, [])
+
+  // Fetch system status every 60s
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch('/api/paper-trading/system-status')
+        if (res.ok) {
+          const data = await res.json() as {
+            activeSessions: number; cronHealthy: boolean; minutesSinceLastTrade: number | null
+          }
+          setSystemStatus(data)
+        }
+      } catch { /* non-blocking */ }
+    }
+    fetchStatus()
+    const interval = setInterval(fetchStatus, 60000)
+    return () => clearInterval(interval)
   }, [])
 
   const handleLogout = async () => {
@@ -133,6 +156,29 @@ export function Sidebar() {
           </div>
         )}
       </nav>
+
+      {/* System Status Bar */}
+      {systemStatus && (
+        <div className={`mx-4 mb-2 px-3 py-2 rounded-xl text-xs flex items-center gap-2 ${
+          systemStatus.cronHealthy ? 'bg-white/10 text-white/70' : 'bg-red-500/20 text-red-200'
+        }`}>
+          <span className={`w-2 h-2 rounded-full shrink-0 ${
+            systemStatus.cronHealthy ? 'bg-green-400 animate-pulse' : 'bg-red-400'
+          }`} />
+          <div className="min-w-0">
+            {systemStatus.cronHealthy ? (
+              <span>
+                {systemStatus.activeSessions} sesiones activas
+                {systemStatus.minutesSinceLastTrade !== null && (
+                  <span className="text-white/40 ml-1">· hace {systemStatus.minutesSinceLastTrade}m</span>
+                )}
+              </span>
+            ) : (
+              <span className="text-red-300 font-medium">⚠ Cron inactivo</span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <div className="p-4 border-t border-white/10">
