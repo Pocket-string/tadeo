@@ -8,6 +8,7 @@ import {
   precomputeIndicators,
   buildContext,
   generateComposite,
+  generateAdaptiveComposite,
   LEGACY_SIGNAL_CONFIG,
   type SignalSystemConfig,
 } from '@/features/paper-trading/services/signalRegistry'
@@ -361,8 +362,12 @@ async function checkSignalFull(
   if (!ctx) return null
 
   // Regime filtering — skip choppy and volatile markets
+  // ADX threshold is timeframe-aware: 4h/1d markets trend slowly so a lower bar applies
   const adxVal = ctx.adx?.adx ?? 0
-  const isChoppy = adxVal < 20 && adxVal > 0
+  const adxChoppyThreshold = (timeframe === '4h' || timeframe === '1d') ? 15
+    : (timeframe === '1m' || timeframe === '5m' || timeframe === '15m') ? 18
+    : 20
+  const isChoppy = adxVal < adxChoppyThreshold && adxVal > 0
   const atrValues = Array.from(indicators.atrMap.values())
   const atrAvg = atrValues.length > 50
     ? atrValues.slice(-50).reduce((s, a) => s + a, 0) / 50
@@ -371,10 +376,10 @@ async function checkSignalFull(
 
   if (isChoppy || isVolatile) return null
 
-  // Use strategy's signal_systems config, or fall back to legacy 3-system
-  const signalConfig: SignalSystemConfig[] = params.signal_systems ?? LEGACY_SIGNAL_CONFIG
-
-  const composite = generateComposite(ctx, signalConfig)
+  // Use strategy's signal_systems config if set; otherwise use adaptive composite
+  const composite = params.signal_systems
+    ? generateComposite(ctx, params.signal_systems as SignalSystemConfig[])
+    : generateAdaptiveComposite(ctx)
 
   if (composite.direction === 'neutral') return null
 
