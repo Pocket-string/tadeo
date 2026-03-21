@@ -91,6 +91,22 @@ export async function getPaperDashboard(sessionId: string): Promise<PaperDashboa
   }
 }
 
+export async function getRecentTrades(limit = 8): Promise<PaperTrade[]> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  const { data } = await supabase
+    .from('paper_trades')
+    .select('*, paper_sessions!inner(user_id, symbol)')
+    .eq('paper_sessions.user_id', user.id)
+    .eq('status', 'closed')
+    .order('exit_time', { ascending: false })
+    .limit(limit)
+
+  return (data ?? []) as PaperTrade[]
+}
+
 export async function getStrategiesForPaper(): Promise<{ id: string; name: string; symbol?: string }[]> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

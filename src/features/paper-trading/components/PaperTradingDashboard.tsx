@@ -9,6 +9,7 @@ import {
   getPaperSessions,
   getPaperDashboard,
   getStrategiesForPaper,
+  getRecentTrades,
 } from '@/actions/paper-trading'
 import type { PaperSession, PaperDashboardData, LivePrice } from '../types'
 import type { MonitorReport, DivergenceAlert } from '../services/aiMonitor'
@@ -20,6 +21,7 @@ export function PaperTradingDashboard() {
   const [dashboard, setDashboard] = useState<PaperDashboardData | null>(null)
   const [monitor, setMonitor] = useState<MonitorReport | null>(null)
   const [strategies, setStrategies] = useState<{ id: string; name: string }[]>([])
+  const [recentTrades, setRecentTrades] = useState<import('../types').PaperTrade[]>([])
   const [loading, setLoading] = useState(true)
   const [tickLoading, setTickLoading] = useState(false)
   const [showNewSession, setShowNewSession] = useState(false)
@@ -33,9 +35,10 @@ export function PaperTradingDashboard() {
 
   const loadSessions = useCallback(async () => {
     try {
-      const [sess, strats] = await Promise.all([getPaperSessions(), getStrategiesForPaper()])
+      const [sess, strats, recent] = await Promise.all([getPaperSessions(), getStrategiesForPaper(), getRecentTrades(8)])
       setSessions(sess)
       setStrategies(strats)
+      setRecentTrades(recent)
       if (strats.length > 0 && !newStrategyId) setNewStrategyId(strats[0].id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error loading sessions')
@@ -234,18 +237,19 @@ export function PaperTradingDashboard() {
           </div>
           <span className="text-xs text-neutral-400">Gestionado por servidor</span>
         </div>
-        {/* Recent closed trades across all sessions — acts as activity log */}
-        {sessions.length > 0 && dashboard?.closedTrades && dashboard.closedTrades.length > 0 && (
+        {/* Global activity log — last 8 closed trades across all sessions */}
+        {recentTrades.length > 0 && (
           <div className="border-t pt-3">
             <p className="text-xs text-neutral-500 mb-2">Últimas operaciones cerradas</p>
             <div className="space-y-1.5">
-              {[...dashboard.closedTrades].reverse().slice(0, 5).map(trade => (
+              {recentTrades.map(trade => (
                 <div key={trade.id} className="flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2">
                     <span className={`px-1.5 py-0.5 rounded font-medium ${trade.type === 'buy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                       {trade.type.toUpperCase()}
                     </span>
-                    <span className="text-neutral-500">{trade.exit_reason}</span>
+                    <span className="text-neutral-600 font-medium">{trade.symbol}</span>
+                    <span className="text-neutral-400">{trade.exit_reason}</span>
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-neutral-400">{new Date(trade.exit_time ?? '').toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}</span>
