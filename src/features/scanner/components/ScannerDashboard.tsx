@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { runScanner, getAvailableData } from '@/actions/scanner'
 import { createStrategyFromScanner } from '@/actions/strategies'
 import type { ScanResult, Opportunity } from '../types'
@@ -161,13 +162,13 @@ export default function ScannerDashboard() {
   const [result, setResult] = useState<ScanResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [approvingId, setApprovingId] = useState<string | null>(null)
-  const [approveResult, setApproveResult] = useState<string | null>(null)
+  const [approvedStrategy, setApprovedStrategy] = useState<{ id: string; name: string } | null>(null)
   const [availableData, setAvailableData] = useState<{ symbol: string; timeframe: string; candleCount: number; candle_count?: number }[]>([])
 
   async function handleScan() {
     setScanning(true)
     setError(null)
-    setApproveResult(null)
+    setApprovedStrategy(null)
     try {
       const data = await getAvailableData()
       setAvailableData(data)
@@ -193,6 +194,7 @@ export default function ScannerDashboard() {
   async function handleApprove(opp: Opportunity) {
     const id = `${opp.symbol}-${opp.timeframe}`
     setApprovingId(id)
+    setApprovedStrategy(null)
     try {
       const strategyName = `Scanner ${opp.signal.toUpperCase()} ${opp.symbol} ${opp.timeframe} (Score: ${opp.score.total})`
       const result = await createStrategyFromScanner({
@@ -213,9 +215,9 @@ export default function ScannerDashboard() {
           take_profit_pct: Math.abs(opp.takeProfit - opp.price) / opp.price,
         },
       })
-      setApproveResult(`Estrategia "${result.name}" creada. Ve a Backtests > Scientific para validar.`)
+      setApprovedStrategy({ id: result.id, name: result.name })
     } catch (err) {
-      setApproveResult(`Error: ${err instanceof Error ? err.message : 'Unknown'}`)
+      setError(err instanceof Error ? err.message : 'Error creando estrategia')
     } finally {
       setApprovingId(null)
     }
@@ -253,9 +255,27 @@ export default function ScannerDashboard() {
         </div>
       )}
 
-      {approveResult && (
-        <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 text-blue-400">
-          {approveResult}
+      {/* Next step banner after approving an opportunity */}
+      {approvedStrategy && (
+        <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-5 space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-green-400 text-lg">✅</span>
+            <span className="font-semibold text-green-400">Estrategia creada exitosamente</span>
+          </div>
+          <p className="text-sm text-foreground/70">
+            <span className="font-medium text-foreground">&ldquo;{approvedStrategy.name}&rdquo;</span> está lista para validarse.
+            El siguiente paso es ejecutar el Backtest Científico para ver si esta estrategia ha funcionado históricamente.
+          </p>
+          <div className="bg-surface border border-border rounded-lg p-3 text-xs text-foreground/60 space-y-1">
+            <p className="font-medium text-foreground/80">¿Qué pasa en el backtest?</p>
+            <p>El sistema prueba la estrategia con datos históricos reales. Si el resultado es verde ✅, puedes activar el agente para que opere en modo simulado (paper trading) sin arriesgar dinero real.</p>
+          </div>
+          <Link
+            href={`/backtests/scientific?strategy=${approvedStrategy.id}`}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-green-600 hover:bg-green-500 text-white rounded-lg font-medium text-sm transition-colors"
+          >
+            Ir al Backtest Científico →
+          </Link>
         </div>
       )}
 

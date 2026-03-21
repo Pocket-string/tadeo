@@ -1,6 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'next/navigation'
+import Link from 'next/link'
 import type { ScientificBacktestOutput, WalkForwardResult, AIBacktestReview, BacktestMetrics, MetricSemaphore } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'] as const
@@ -8,7 +10,13 @@ const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'] as const
 interface Strategy { id: string; name: string }
 
 export function ScientificBacktestRunner({ strategies }: { strategies: Strategy[] }) {
-  const [strategyId, setStrategyId] = useState(strategies[0]?.id ?? '')
+  const searchParams = useSearchParams()
+  const preselectedId = searchParams.get('strategy')
+  const initialId = preselectedId && strategies.find(s => s.id === preselectedId)
+    ? preselectedId
+    : strategies[0]?.id ?? ''
+
+  const [strategyId, setStrategyId] = useState(initialId)
   const [symbol, setSymbol] = useState('BTCUSDT')
   const [timeframe, setTimeframe] = useState('1h')
   const [startDate, setStartDate] = useState(getMonthsAgo(6))
@@ -23,6 +31,35 @@ export function ScientificBacktestRunner({ strategies }: { strategies: Strategy[
     aiReview?: AIBacktestReview
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [deploying, setDeploying] = useState(false)
+  const [deployedSession, setDeployedSession] = useState<{ id: string } | null>(null)
+  const [deployError, setDeployError] = useState<string | null>(null)
+
+  // Sync strategyId when URL param changes (e.g. navigating from Scanner)
+  useEffect(() => {
+    if (preselectedId && strategies.find(s => s.id === preselectedId)) {
+      setStrategyId(preselectedId)
+    }
+  }, [preselectedId, strategies])
+
+  async function handleDeploy() {
+    setDeploying(true)
+    setDeployError(null)
+    try {
+      const { startSession } = await import('@/actions/paper-trading')
+      const session = await startSession({
+        strategyId,
+        symbol,
+        timeframe,
+        initialCapital: capital,
+      })
+      setDeployedSession({ id: session.id })
+    } catch (err) {
+      setDeployError(err instanceof Error ? err.message : 'Error desplegando')
+    } finally {
+      setDeploying(false)
+    }
+  }
 
   async function handleRun(e: React.FormEvent) {
     e.preventDefault()
@@ -155,12 +192,137 @@ export function ScientificBacktestRunner({ strategies }: { strategies: Strategy[
           {/* AI Review — HUMAN GATE */}
           {result.aiReview && <AIReviewCard review={result.aiReview} />}
 
+          {/* Novice-friendly explanation + Deploy CTA */}
+          <NoviceGuide
+            semaphore={result.scientific.semaphore}
+            aiVerdict={result.aiReview?.verdict}
+            strategyName={strategies.find(s => s.id === strategyId)?.name ?? 'esta estrategia'}
+            symbol={symbol}
+            timeframe={timeframe}
+            totalTrades={result.scientific.combined.metrics.totalTrades}
+            deploying={deploying}
+            deployedSession={deployedSession}
+            deployError={deployError}
+            onDeploy={handleDeploy}
+          />
+
           {/* Equity Curves */}
           <div className="bg-surface border border-border rounded-lg p-6">
             <h3 className="font-semibold text-foreground mb-3">Equity Curve (Combinado)</h3>
             <EquityCurveSimple data={result.scientific.combined.equityCurve} splitDate={result.scientific.splitDate} />
           </div>
         </>
+      )}
+    </div>
+  )
+}
+
+function NoviceGuide({
+  semaphore,
+  aiVerdict,
+  strategyName,
+  symbol,
+  timeframe,
+  totalTrades,
+  deploying,
+  deployedSession,
+  deployError,
+  onDeploy,
+}: {
+  semaphore: MetricSemaphore
+  aiVerdict?: 'approve' | 'caution' | 'reject'
+  strategyName: string
+  symbol: string
+  timeframe: string
+  totalTrades: number
+  deploying: boolean
+  deployedSession: { id: string } | null
+  deployError: string | null
+  onDeploy: () => void
+}) {
+  const canDeploy = (semaphore.overall === 'green' || semaphore.overall === 'yellow') &&
+    aiVerdict !== 'reject'
+
+  const explanation = semaphore.overall === 'green'
+    ? `El sistema analizó ${totalTrades} operaciones históricas de ${symbol} en ${timeframe} y los resultados son positivos. La estrategia ganó dinero en periodos que nunca vio antes (Out-of-Sample), lo cual es la prueba más importante de que no es un accidente.`
+    : semaphore.overall === 'yellow'
+    ? `El sistema analizó ${totalTrades} operaciones históricas. Los resultados son prometedores pero hay algunas señales de precaución. Puedes activar el agente en modo simulado (sin dinero real) para ver cómo se comporta en el mercado actual antes de decidir.`
+    : `El sistema analizó ${totalTrades} operaciones históricas y encontró problemas significativos. La estrategia no funcionó consistentemente en datos nuevos. Es mejor no activarla ahora — el scanner puede encontrar mejores oportunidades.`
+
+  const nextStepTitle = semaphore.overall === 'green' ? '¿Qué hacer ahora? — Activa el agente' :
+    semaphore.overall === 'yellow' ? '¿Qué hacer ahora? — Pruébalo en simulación' :
+    '¿Qué hacer ahora? — Busca otra oportunidad'
+
+  return (
+    <div className={`border-2 rounded-xl p-6 space-y-4 ${
+      semaphore.overall === 'green' ? 'border-green-500/40 bg-green-500/5' :
+      semaphore.overall === 'yellow' ? 'border-yellow-500/40 bg-yellow-500/5' :
+      'border-red-500/40 bg-red-500/5'
+    }`}>
+      <div className="flex items-center gap-2">
+        <span className="text-lg">
+          {semaphore.overall === 'green' ? '✅' : semaphore.overall === 'yellow' ? '⚠️' : '❌'}
+        </span>
+        <h3 className="font-semibold text-foreground">{nextStepTitle}</h3>
+      </div>
+
+      <p className="text-sm text-foreground/70 leading-relaxed">{explanation}</p>
+
+      {canDeploy && !deployedSession && (
+        <div className="space-y-3">
+          <div className="bg-surface border border-border rounded-lg p-3 text-xs text-foreground/60 space-y-1">
+            <p className="font-medium text-foreground/80">Modo Paper Trading (simulación)</p>
+            <p>
+              El agente operará con <strong className="text-foreground">{symbol} {timeframe}</strong> usando capital virtual.
+              No arriesgas dinero real. Puedes detenerlo en cualquier momento desde el panel de Paper Trading.
+            </p>
+          </div>
+
+          <button
+            onClick={onDeploy}
+            disabled={deploying}
+            className={`w-full py-3 rounded-xl font-semibold text-sm transition-colors flex items-center justify-center gap-2 ${
+              semaphore.overall === 'green'
+                ? 'bg-green-600 hover:bg-green-500 text-white'
+                : 'bg-yellow-500 hover:bg-yellow-400 text-black'
+            } disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            {deploying ? (
+              <>Activando agente...</>
+            ) : (
+              <>🚀 Desplegar a Paper Trading — <span className="opacity-80">sin dinero real</span></>
+            )}
+          </button>
+
+          {deployError && (
+            <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2">{deployError}</p>
+          )}
+        </div>
+      )}
+
+      {deployedSession && (
+        <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 space-y-2">
+          <p className="text-green-400 font-semibold text-sm">¡Agente activado!</p>
+          <p className="text-sm text-foreground/70">
+            El sistema ya está operando <strong className="text-foreground">{strategyName}</strong> en modo simulado.
+            Monitorea su desempeño en el panel de Paper Trading.
+          </p>
+          <Link
+            href="/paper-trading"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            Ver en Paper Trading →
+          </Link>
+        </div>
+      )}
+
+      {!canDeploy && (
+        <Link
+          href="/scanner"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-surface border border-border hover:border-foreground/30 text-foreground rounded-lg text-sm font-medium transition-colors"
+        >
+          Volver al Scanner →
+        </Link>
       )}
     </div>
   )
