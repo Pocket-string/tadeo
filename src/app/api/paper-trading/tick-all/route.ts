@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { getCandles } from '@/features/market-data/services/marketDataService'
 import { calculateATR, calculateEMA } from '@/features/indicators/services/indicatorEngine'
 import { getLivePrice } from '@/features/paper-trading/services/priceService'
@@ -8,7 +8,6 @@ import {
   buildContext,
   generateComposite,
   generateAdaptiveComposite,
-  LEGACY_SIGNAL_CONFIG,
   type SignalSystemConfig,
 } from '@/features/paper-trading/services/signalRegistry'
 import type { StrategyParameters } from '@/types/database'
@@ -35,6 +34,11 @@ interface TickResult {
   pnl?: number
 }
 
+// Signal check result with rejection reason for observability
+type SignalCheckResult =
+  | { signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[] }
+  | { signal: null; rejectionReason: string }
+
 export async function POST(req: NextRequest) {
   // Auth: accept cron secret OR service role key suffix
   const authHeader = req.headers.get('authorization')
@@ -50,8 +54,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  // Reset per-invocation caches
+  // Reset ALL per-invocation caches
   htfBiasCache = new Map()
+  atrCache.clear()
 
   const supabase = getServiceClient()
   const results: TickResult[] = []
@@ -72,17 +77,29 @@ export async function POST(req: NextRequest) {
 
   // Cache prices and signals per symbol+timeframe to avoid redundant API calls
   const priceCache = new Map<string, number>()
-  const signalCache = new Map<string, { signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[] } | null>()
+  const signalCache = new Map<string, SignalCheckResult>()
 
   for (const session of sessions) {
     const riskTier: RiskTier = (session.risk_tier as RiskTier) || 'moderate'
     try {
       const params = (session.strategies as { parameters: StrategyParameters }).parameters
 
-      // Get price (cached per symbol)
+      // Get price (cached per symbol) — wrapped in try/catch so one symbol failure doesn't crash all
       if (!priceCache.has(session.symbol)) {
-        const priceData = await getLivePrice(session.symbol)
-        priceCache.set(session.symbol, priceData.price)
+        try {
+          const priceData = await getLivePrice(session.symbol)
+          priceCache.set(session.symbol, priceData.price)
+        } catch (priceErr) {
+          results.push({
+            sessionId: session.id,
+            symbol: session.symbol,
+            timeframe: session.timeframe,
+            riskTier,
+            action: 'error',
+            reason: `Price fetch failed: ${priceErr instanceof Error ? priceErr.message : 'Unknown'}`,
+          })
+          continue
+        }
       }
       const price = priceCache.get(session.symbol)!
 
@@ -147,7 +164,7 @@ export async function POST(req: NextRequest) {
 
         // Trailing stop: update SL if price moved favorably
         const cacheKey = `${session.symbol}:${session.timeframe}`
-        const currentATR = await getCachedATR(cacheKey, session.symbol, session.timeframe as Timeframe)
+        const currentATR = await getCachedATR(cacheKey, session.symbol, session.timeframe as Timeframe, supabase)
         if (currentATR) {
           const entryPrice = Number(trade.entry_price)
           const trailActivation = trade.type === 'buy'
@@ -210,18 +227,18 @@ export async function POST(req: NextRequest) {
       // No open position — check for signal (cached per symbol+timeframe)
       const sigKey = `${session.symbol}:${session.timeframe}`
       if (!signalCache.has(sigKey)) {
-        signalCache.set(sigKey, await checkSignalFull(session.symbol, session.timeframe as Timeframe, params))
+        signalCache.set(sigKey, await checkSignalFull(session.symbol, session.timeframe as Timeframe, params, supabase))
       }
       const signalResult = signalCache.get(sigKey)!
 
-      if (!signalResult) {
+      if (signalResult.signal === null) {
         results.push({
           sessionId: session.id,
           symbol: session.symbol,
           timeframe: session.timeframe,
           riskTier,
           action: 'no_signal',
-          reason: 'Sin señal',
+          reason: signalResult.rejectionReason,
           price,
         })
         continue
@@ -299,7 +316,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Log all agent decisions to paper_agent_log (non-blocking)
+  // Log all agent decisions to paper_agent_log (non-blocking, with error logging)
   const logsToInsert = results.map(r => ({
     session_id: r.sessionId,
     symbol: r.symbol,
@@ -310,7 +327,8 @@ export async function POST(req: NextRequest) {
     pnl: r.pnl ?? null,
   }))
   if (logsToInsert.length > 0) {
-    supabase.from('paper_agent_log').insert(logsToInsert).then(() => { /* non-blocking */ })
+    supabase.from('paper_agent_log').insert(logsToInsert)
+      .then(({ error }) => { if (error) console.error('Agent log insert failed:', error.message) })
   }
 
   return NextResponse.json({
@@ -322,7 +340,7 @@ export async function POST(req: NextRequest) {
 }
 
 async function updateSessionStats(
-  supabase: ReturnType<typeof getServiceClient>,
+  supabase: SupabaseClient,
   sessionId: string,
   initialCapital: number
 ) {
@@ -349,27 +367,24 @@ async function updateSessionStats(
     .eq('id', sessionId)
 }
 
-// ATR cache to avoid redundant candle fetches
+// ATR cache — reset each POST invocation
 const atrCache = new Map<string, number | null>()
 
 // HTF bias cache — keyed by `symbol:htf` — reset each POST invocation
 let htfBiasCache = new Map<string, 'bull' | 'bear' | 'neutral'>()
 
-async function getCachedATR(key: string, symbol: string, timeframe: Timeframe): Promise<number | null> {
+async function getCachedATR(key: string, symbol: string, timeframe: Timeframe, dbClient: SupabaseClient): Promise<number | null> {
   if (atrCache.has(key)) return atrCache.get(key)!
-  const val = await getCurrentATR(symbol, timeframe)
+  const val = await getCurrentATR(symbol, timeframe, dbClient)
   atrCache.set(key, val)
   return val
 }
 
-/**
- * Get current ATR value for a symbol/timeframe.
- */
-async function getCurrentATR(symbol: string, timeframe: Timeframe): Promise<number | null> {
+async function getCurrentATR(symbol: string, timeframe: Timeframe, dbClient: SupabaseClient): Promise<number | null> {
   try {
     const endDate = new Date().toISOString()
     const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-    const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 100 })
+    const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 100 }, { client: dbClient })
     if (candles.length < 20) return null
 
     const atr = calculateATR(candles, 14)
@@ -381,19 +396,29 @@ async function getCurrentATR(symbol: string, timeframe: Timeframe): Promise<numb
 
 /**
  * Full signal check using the N-Signal registry.
- * Backward compatible: strategies without signal_systems use legacy 3-system config.
- * Includes regime filtering (skip choppy/volatile markets).
+ * Returns typed result with rejection reason for observability.
  */
 async function checkSignalFull(
   symbol: string,
   timeframe: Timeframe,
-  params: StrategyParameters
-): Promise<{ signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[] } | null> {
+  params: StrategyParameters,
+  dbClient: SupabaseClient
+): Promise<SignalCheckResult> {
   const endDate = new Date().toISOString()
   const startDate = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
 
-  const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 200 })
-  if (candles.length < 50) return null
+  const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 200 }, { client: dbClient })
+  if (candles.length < 50) return { signal: null, rejectionReason: `insufficient_candles:${candles.length}` }
+
+  // Staleness check — reject if last candle is older than 3 candle periods
+  const tfMs = getTimeframeMs(timeframe)
+  if (tfMs > 0) {
+    const lastTs = new Date(candles[candles.length - 1].timestamp).getTime()
+    const staleness = Date.now() - lastTs
+    if (staleness > tfMs * 3) {
+      return { signal: null, rejectionReason: `stale_data:${Math.round(staleness / 60000)}min` }
+    }
+  }
 
   // Pre-compute all indicators
   const indicators = precomputeIndicators(candles, params)
@@ -404,66 +429,64 @@ async function checkSignalFull(
   const prevTs = candles[prevIndex].timestamp
   const prevEF = indicators.emaFastMap.get(prevTs)
   const prevES = indicators.emaSlowMap.get(prevTs)
-  if (prevEF === undefined || prevES === undefined) return null
+  if (prevEF === undefined || prevES === undefined) return { signal: null, rejectionReason: 'missing_prev_ema' }
 
   // Build signal context for the latest candle
   const ctx = buildContext(candles, lastIndex, params, indicators, prevEF, prevES)
-  if (!ctx) return null
+  if (!ctx) return { signal: null, rejectionReason: 'context_build_failed' }
 
   // Regime filtering — skip choppy and volatile markets
-  // ADX threshold is timeframe-aware: 4h/1d markets trend slowly so a lower bar applies
+  // ADX thresholds calibrated for crypto (lower than forex/stocks)
   const adxVal = ctx.adx?.adx ?? 0
-  const adxChoppyThreshold = (timeframe === '4h' || timeframe === '1d') ? 15
-    : (timeframe === '1m' || timeframe === '5m' || timeframe === '15m') ? 18
-    : 20
+  const adxChoppyThreshold = (timeframe === '4h' || timeframe === '1d') ? 10
+    : (timeframe === '1m' || timeframe === '5m' || timeframe === '15m') ? 13
+    : 15
   const isChoppy = adxVal < adxChoppyThreshold && adxVal > 0
   const atrValues = Array.from(indicators.atrMap.values())
   const atrAvg = atrValues.length > 50
     ? atrValues.slice(-50).reduce((s, a) => s + a, 0) / 50
     : 0
-  const isVolatile = atrAvg > 0 && ctx.atr > 2 * atrAvg
+  const isVolatile = atrAvg > 0 && ctx.atr > 3 * atrAvg
 
-  if (isChoppy || isVolatile) return null
+  if (isChoppy) return { signal: null, rejectionReason: `choppy:ADX=${adxVal.toFixed(1)}<${adxChoppyThreshold}` }
+  if (isVolatile) return { signal: null, rejectionReason: `volatile:ATR=${ctx.atr.toFixed(4)}>3x(${atrAvg.toFixed(4)})` }
 
   // Use strategy's signal_systems config if set; otherwise use adaptive composite
-  // (adaptive auto-adjusts signal weights based on ADX regime — better than static legacy)
   const composite = params.signal_systems
     ? generateComposite(ctx, params.signal_systems as SignalSystemConfig[])
     : generateAdaptiveComposite(ctx)
 
-  if (composite.direction === 'neutral') return null
+  if (composite.direction === 'neutral') {
+    return { signal: null, rejectionReason: `neutral_composite:conf=${composite.totalConfidence.toFixed(3)},systems=[${composite.activeSystems.join(',')}]` }
+  }
 
   const signal: 'buy' | 'sell' = composite.direction === 'long' ? 'buy' : 'sell'
 
   // Higher-timeframe trend filter — block signals against 4h/1d trend
-  const htfBias = await getCachedHTFBias(symbol, timeframe)
-  if (htfBias === 'bull' && signal === 'sell') return null
-  if (htfBias === 'bear' && signal === 'buy') return null
+  const htfBias = await getCachedHTFBias(symbol, timeframe, dbClient)
+  if (htfBias === 'bull' && signal === 'sell') return { signal: null, rejectionReason: `htf_blocked:bias=bull,signal=sell` }
+  if (htfBias === 'bear' && signal === 'buy') return { signal: null, rejectionReason: `htf_blocked:bias=bear,signal=buy` }
 
   const reason = composite.activeSystems.join(' + ')
 
   return { signal, atr: ctx.atr, reason, activeSystems: composite.activeSystems }
 }
 
-/**
- * Determine trend bias from a higher timeframe (4h for intraday, 1d for 4h sessions).
- * Returns 'bull' / 'bear' / 'neutral' based on price position relative to EMA50.
- */
-async function getCachedHTFBias(symbol: string, currentTf: Timeframe): Promise<'bull' | 'bear' | 'neutral'> {
+async function getCachedHTFBias(symbol: string, currentTf: Timeframe, dbClient: SupabaseClient): Promise<'bull' | 'bear' | 'neutral'> {
   const htf: Timeframe = (currentTf === '4h' || currentTf === '1d') ? '1d' : '4h'
   const key = `${symbol}:${htf}`
   if (htfBiasCache.has(key)) return htfBiasCache.get(key)!
 
-  const bias = await computeHTFBias(symbol, htf)
+  const bias = await computeHTFBias(symbol, htf, dbClient)
   htfBiasCache.set(key, bias)
   return bias
 }
 
-async function computeHTFBias(symbol: string, htf: Timeframe): Promise<'bull' | 'bear' | 'neutral'> {
+async function computeHTFBias(symbol: string, htf: Timeframe, dbClient: SupabaseClient): Promise<'bull' | 'bear' | 'neutral'> {
   try {
     const endDate = new Date().toISOString()
     const startDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString()
-    const candles = await getCandles({ symbol, timeframe: htf, startDate, endDate, limit: 60 })
+    const candles = await getCandles({ symbol, timeframe: htf, startDate, endDate, limit: 60 }, { client: dbClient })
     if (candles.length < 50) return 'neutral'
 
     const ema50 = calculateEMA(candles, 50)
@@ -479,4 +502,12 @@ async function computeHTFBias(symbol: string, htf: Timeframe): Promise<'bull' | 
   } catch {
     return 'neutral'
   }
+}
+
+function getTimeframeMs(tf: Timeframe): number {
+  const map: Record<string, number> = {
+    '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
+    '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000,
+  }
+  return map[tf] ?? 0
 }

@@ -1,10 +1,18 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MarketDataQuery, OHLCVCandle, ImportCandlesInput } from '../types'
 
-export async function getCandles(query: MarketDataQuery): Promise<OHLCVCandle[]> {
-  const supabase = await createClient()
+/**
+ * Fetch OHLCV candles. Accepts optional service client for cron/API contexts
+ * where cookie-based auth is unavailable (RLS blocks anon role on ohlcv_candles).
+ */
+export async function getCandles(
+  query: MarketDataQuery,
+  options?: { client?: SupabaseClient }
+): Promise<OHLCVCandle[]> {
+  const supabase = options?.client ?? await createClient()
 
   let q = supabase
     .from('ohlcv_candles')

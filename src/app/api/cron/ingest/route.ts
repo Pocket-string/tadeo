@@ -5,7 +5,7 @@ import { ingestFromBinance, type IngestResult } from '@/features/market-data/ser
 export const dynamic = 'force-dynamic'
 export const maxDuration = 120
 
-const DEFAULT_BACKFILL_DAYS = 7
+const DEFAULT_BACKFILL_DAYS = 90
 
 /**
  * Auto-ingest OHLCV candles for all active paper trading pairs.

@@ -4,6 +4,22 @@ import { z } from 'zod'
 
 const BINANCE_BASE_URL = 'https://api.binance.com/api/v3'
 
+// Simple concurrency limiter for Binance API (free tier: 1200 req/min)
+let activeRequests = 0
+const MAX_CONCURRENT = 10
+
+async function withConcurrencyLimit<T>(fn: () => Promise<T>): Promise<T> {
+  while (activeRequests >= MAX_CONCURRENT) {
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  activeRequests++
+  try {
+    return await fn()
+  } finally {
+    activeRequests--
+  }
+}
+
 // Binance kline interval mapping
 const TIMEFRAME_MAP: Record<string, string> = {
   '1m': '1m',
@@ -67,9 +83,11 @@ export async function fetchBinanceCandles(options: FetchCandlesOptions): Promise
   if (options.startTime) params.set('startTime', String(options.startTime))
   if (options.endTime) params.set('endTime', String(options.endTime))
 
-  const response = await fetch(`${BINANCE_BASE_URL}/klines?${params}`, {
-    next: { revalidate: 60 },
-  })
+  const response = await withConcurrencyLimit(() =>
+    fetch(`${BINANCE_BASE_URL}/klines?${params}`, {
+      next: { revalidate: 60 },
+    })
+  )
 
   if (!response.ok) {
     const text = await response.text()
