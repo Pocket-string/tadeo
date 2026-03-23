@@ -19,6 +19,8 @@ function getServiceClient() {
 interface DiscoveryConfig {
   symbols: string[]
   timeframes: Timeframe[]
+  /** Explicit symbol+timeframe pairs (overrides cross-product of symbols × timeframes) */
+  symbolTimeframePairs?: { symbol: string; timeframe: Timeframe }[]
   userId: string
   hypothesesPerMarket?: number
   minScore?: number
@@ -78,8 +80,11 @@ export async function runDiscoveryLoop(config: DiscoveryConfig & { trigger?: str
     feedbackContext = config.failureContext + '\n\n' + feedbackContext
   }
 
-  for (const symbol of config.symbols) {
-    for (const timeframe of config.timeframes) {
+  // Use explicit pairs if provided, otherwise cross-product
+  const pairs = config.symbolTimeframePairs
+    ?? config.symbols.flatMap(s => config.timeframes.map(tf => ({ symbol: s, timeframe: tf })))
+
+  for (const { symbol, timeframe } of pairs) {
       scanned++
       try {
         // Step 1: SCAN — Fetch candles
@@ -153,7 +158,6 @@ export async function runDiscoveryLoop(config: DiscoveryConfig & { trigger?: str
       } catch (err) {
         errors.push(`${symbol}/${timeframe}: ${err instanceof Error ? err.message : 'Unknown'}`)
       }
-    }
   }
 
   // Log run completion

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { runDiscoveryLoop } from '@/features/strategy-discovery/services/discoveryAgent'
+import { TRADING_PAIRS, PAIR_CONFIG } from '@/shared/lib/trading-pairs'
 import type { Timeframe } from '@/features/market-data/types'
+import type { StrategyParameters } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300 // 5 minutes for discovery
@@ -23,46 +25,111 @@ export async function GET(req: NextRequest) {
 
   const supabase = getServiceClient()
 
-  // Get the first user with active sessions (single-tenant for now)
-  const { data: session } = await supabase
-    .from('paper_sessions')
-    .select('user_id, symbol, timeframe')
-    .eq('status', 'active')
-    .limit(1)
-    .single()
-
-  if (!session) {
-    return NextResponse.json({ message: 'No active sessions found', proposals: 0 })
+  // Get first user (single-tenant app)
+  const { data: users } = await supabase.from('profiles').select('id').limit(1)
+  if (!users?.length) {
+    return NextResponse.json({ error: 'No users found' }, { status: 500 })
   }
+  const userId = users[0].id
 
-  // Discover unique symbol+timeframe pairs from active sessions
-  const { data: activeSessions } = await supabase
-    .from('paper_sessions')
-    .select('symbol, timeframe')
-    .eq('status', 'active')
-    .eq('user_id', session.user_id)
+  // Build explicit symbol+timeframe pairs from config (avoids cross-product)
+  const symbols = [...TRADING_PAIRS]
+  const symbolTimeframePairs = symbols.map(s => ({
+    symbol: s,
+    timeframe: PAIR_CONFIG[s].defaultTimeframe as Timeframe,
+  }))
 
-  const symbolSet = new Set<string>()
-  const timeframeSet = new Set<Timeframe>()
-
-  for (const s of activeSessions ?? []) {
-    symbolSet.add(s.symbol)
-    timeframeSet.add(s.timeframe as Timeframe)
-  }
-
+  // Run discovery for ALL 10 pairs
   const result = await runDiscoveryLoop({
-    symbols: Array.from(symbolSet),
-    timeframes: Array.from(timeframeSet),
-    userId: session.user_id,
+    symbols,
+    timeframes: [...new Set(symbolTimeframePairs.map(p => p.timeframe))],
+    symbolTimeframePairs,
+    userId,
     hypothesesPerMarket: 3,
     minScore: 5,
     monthsBack: 6,
     trigger: 'cron',
   })
 
+  // Auto-deploy: for pairs without active sessions, deploy best pending proposal
+  const { data: activeSessions } = await supabase
+    .from('paper_sessions')
+    .select('symbol, timeframe')
+    .eq('user_id', userId)
+    .eq('status', 'active')
+
+  const activeSet = new Set((activeSessions ?? []).map(s => `${s.symbol}:${s.timeframe}`))
+  let deployed = 0
+
+  for (const symbol of symbols) {
+    const tf = PAIR_CONFIG[symbol].defaultTimeframe
+    if (activeSet.has(`${symbol}:${tf}`)) continue
+
+    // Get best pending proposal for this pair
+    const { data: proposal } = await supabase
+      .from('strategy_proposals')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('symbol', symbol)
+      .eq('timeframe', tf)
+      .eq('status', 'pending')
+      .order('score', { ascending: false })
+      .limit(1)
+      .single()
+
+    if (!proposal) continue
+
+    const params = proposal.optimized_params as StrategyParameters
+    const metrics = proposal.backtest_results as {
+      winRate: number; netPnlPct: number; sharpeRatio: number; totalTrades: number
+    }
+
+    // Create strategy
+    const stratName = `Discovery-${symbol}-${tf} (WR:${(metrics.winRate * 100).toFixed(0)}% PnL:${(metrics.netPnlPct * 100).toFixed(1)}%)`
+    const { data: strategy } = await supabase
+      .from('strategies')
+      .insert({
+        user_id: userId,
+        name: stratName,
+        description: `Auto-discovered. ${proposal.ai_rationale}. ${metrics.totalTrades} trades. Sharpe: ${metrics.sharpeRatio.toFixed(2)}. Walk-forward validated.`,
+        status: 'validated',
+        parameters: params,
+      })
+      .select('id')
+      .single()
+
+    if (!strategy) continue
+
+    // Create paper session
+    const config = PAIR_CONFIG[symbol]
+    const { data: session } = await supabase
+      .from('paper_sessions')
+      .insert({
+        user_id: userId,
+        strategy_id: strategy.id,
+        symbol,
+        timeframe: tf,
+        initial_capital: 100,
+        current_capital: 100,
+        risk_tier: config.riskTier,
+      })
+      .select('id')
+      .single()
+
+    if (session) {
+      await supabase.from('strategy_proposals').update({
+        status: 'deployed',
+        reviewed_at: new Date().toISOString(),
+        deployed_session_id: session.id,
+      }).eq('id', proposal.id)
+      deployed++
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     timestamp: new Date().toISOString(),
+    deployed,
     ...result,
   })
 }
