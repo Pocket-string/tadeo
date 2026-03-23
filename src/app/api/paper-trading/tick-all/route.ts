@@ -14,6 +14,17 @@ import type { StrategyParameters } from '@/types/database'
 import type { Timeframe } from '@/features/market-data/types'
 import { RISK_TIERS, type RiskTier } from '@/features/paper-trading/types'
 
+// ── Slippage simulation for realistic paper trading ─────────────────────────
+// SL slippage is higher because stop-loss fills are market orders during fast moves
+const SLIPPAGE_SL = 0.001   // 0.1% — stop loss exits (market order in real trading)
+const SLIPPAGE_TP = 0.0005  // 0.05% — take profit exits (limit order, less slippage)
+const SLIPPAGE_ENTRY = 0.0005 // 0.05% — entry fills (market order but no urgency)
+
+// ── Circuit Breaker thresholds ──────────────────────────────────────────────
+const MAX_DRAWDOWN_PCT = 0.15      // 15% max drawdown before auto-pause
+const MAX_CONSECUTIVE_LOSSES = 3   // pause after N consecutive losses
+const COOLDOWN_MS = 60 * 60 * 1000 // 1 hour cooldown after consecutive losses
+
 // Service role client — bypasses RLS to tick ALL active sessions
 function getServiceClient() {
   return createClient(
@@ -79,10 +90,84 @@ export async function POST(req: NextRequest) {
   const priceCache = new Map<string, number>()
   const signalCache = new Map<string, SignalCheckResult>()
 
+  // Pre-fetch recent losses per session for consecutive-loss circuit breaker
+  const consecutiveLossCache = new Map<string, { count: number; lastLossAt: string | null }>()
+  {
+    const { data: recentTrades } = await supabase
+      .from('paper_trades')
+      .select('session_id, pnl, exit_time')
+      .in('session_id', sessions.map(s => s.id))
+      .eq('status', 'closed')
+      .order('exit_time', { ascending: false })
+      .limit(500)
+
+    if (recentTrades) {
+      // Group by session and count consecutive losses from most recent
+      const bySession = new Map<string, { pnl: number; exit_time: string }[]>()
+      for (const t of recentTrades) {
+        const list = bySession.get(t.session_id) || []
+        list.push({ pnl: Number(t.pnl), exit_time: t.exit_time })
+        bySession.set(t.session_id, list)
+      }
+      for (const [sid, trades] of bySession) {
+        let count = 0
+        for (const t of trades) { // already sorted most recent first
+          if (t.pnl < 0) count++
+          else break
+        }
+        consecutiveLossCache.set(sid, {
+          count,
+          lastLossAt: count > 0 ? trades[0].exit_time : null,
+        })
+      }
+    }
+  }
+
   for (const session of sessions) {
     const riskTier: RiskTier = (session.risk_tier as RiskTier) || 'moderate'
     try {
       const params = (session.strategies as { parameters: StrategyParameters }).parameters
+
+      // ── Circuit Breaker 1: Max Drawdown (15%) ──────────────────────────
+      // If session has lost more than 15% of initial capital, auto-pause
+      const drawdownPct = Number(session.net_pnl) / Number(session.initial_capital)
+      if (drawdownPct <= -MAX_DRAWDOWN_PCT) {
+        await supabase
+          .from('paper_sessions')
+          .update({ status: 'paused', max_drawdown: Math.abs(drawdownPct) })
+          .eq('id', session.id)
+
+        results.push({
+          sessionId: session.id,
+          symbol: session.symbol,
+          timeframe: session.timeframe,
+          riskTier,
+          action: 'circuit_breaker',
+          reason: `PAUSED: drawdown ${(drawdownPct * 100).toFixed(1)}% exceeded -${MAX_DRAWDOWN_PCT * 100}% limit`,
+          price: 0,
+        })
+        continue
+      }
+
+      // ── Circuit Breaker 2: Consecutive Losses → cooldown ──────────────
+      const lossInfo = consecutiveLossCache.get(session.id)
+      if (lossInfo && lossInfo.count >= MAX_CONSECUTIVE_LOSSES && lossInfo.lastLossAt) {
+        const lastLossTime = new Date(lossInfo.lastLossAt).getTime()
+        const elapsed = Date.now() - lastLossTime
+        if (elapsed < COOLDOWN_MS) {
+          const remainMin = Math.ceil((COOLDOWN_MS - elapsed) / 60000)
+          results.push({
+            sessionId: session.id,
+            symbol: session.symbol,
+            timeframe: session.timeframe,
+            riskTier,
+            action: 'cooldown',
+            reason: `${lossInfo.count} consecutive losses — cooldown ${remainMin}min remaining`,
+            price: 0,
+          })
+          continue
+        }
+      }
 
       // Get price (cached per symbol) — wrapped in try/catch so one symbol failure doesn't crash all
       if (!priceCache.has(session.symbol)) {
@@ -118,12 +203,23 @@ export async function POST(req: NextRequest) {
         let exitPrice = 0
         let exitReason = ''
 
+        // Simulate slippage: SL exits get 0.1% worse, TP exits get 0.05% worse
         if (trade.type === 'buy') {
-          if (price <= sl) { exitPrice = sl; exitReason = 'stop_loss'; closed = true }
-          else if (price >= tp) { exitPrice = tp; exitReason = 'take_profit'; closed = true }
+          if (price <= sl) {
+            exitPrice = sl * (1 - SLIPPAGE_SL) // slips lower on SL
+            exitReason = 'stop_loss'; closed = true
+          } else if (price >= tp) {
+            exitPrice = tp * (1 - SLIPPAGE_TP) // slightly worse on TP
+            exitReason = 'take_profit'; closed = true
+          }
         } else {
-          if (price >= sl) { exitPrice = sl; exitReason = 'stop_loss'; closed = true }
-          else if (price <= tp) { exitPrice = tp; exitReason = 'take_profit'; closed = true }
+          if (price >= sl) {
+            exitPrice = sl * (1 + SLIPPAGE_SL) // slips higher on SL (worse for short)
+            exitReason = 'stop_loss'; closed = true
+          } else if (price <= tp) {
+            exitPrice = tp * (1 + SLIPPAGE_TP)
+            exitReason = 'take_profit'; closed = true
+          }
         }
 
         if (closed) {
@@ -267,12 +363,17 @@ export async function POST(req: NextRequest) {
         continue
       }
 
+      // Apply entry slippage: buy fills slightly higher, sell fills slightly lower
+      const entryPrice = signal === 'buy'
+        ? price * (1 + SLIPPAGE_ENTRY)
+        : price * (1 - SLIPPAGE_ENTRY)
+
       const stopLoss = signal === 'buy'
-        ? price - stopDist
-        : price + stopDist
+        ? entryPrice - stopDist
+        : entryPrice + stopDist
       const takeProfit = signal === 'buy'
-        ? price + currentATR * tpMult
-        : price - currentATR * tpMult
+        ? entryPrice + currentATR * tpMult
+        : entryPrice - currentATR * tpMult
 
       // INSERT with conflict guard — unique index prevents duplicate open trades
       const { data: inserted } = await supabase
@@ -284,11 +385,11 @@ export async function POST(req: NextRequest) {
           symbol: session.symbol,
           timeframe: session.timeframe,
           type: signal,
-          entry_price: price,
+          entry_price: entryPrice,
           quantity,
           stop_loss: stopLoss,
           take_profit: takeProfit,
-          metadata: { active_systems: signalSystems ?? [] },
+          metadata: { active_systems: signalSystems ?? [], slippage: SLIPPAGE_ENTRY },
         })
         .select('id')
 
@@ -301,7 +402,7 @@ export async function POST(req: NextRequest) {
         timeframe: session.timeframe,
         riskTier,
         action: signal,
-        reason: `[${riskTier}] ${signalReason} | SL:${stopLoss.toFixed(2)} TP:${takeProfit.toFixed(2)} Qty:${quantity.toFixed(4)}`,
+        reason: `[${riskTier}] ${signalReason} | Entry:${entryPrice.toFixed(2)}(+slip) SL:${stopLoss.toFixed(2)} TP:${takeProfit.toFixed(2)} Qty:${quantity.toFixed(4)}`,
         price,
       })
     } catch (err) {
@@ -344,17 +445,30 @@ async function updateSessionStats(
   sessionId: string,
   initialCapital: number
 ) {
-  // Count only trades belonging to THIS session
+  // Count only trades belonging to THIS session, ordered by exit time
   const { data: trades } = await supabase
     .from('paper_trades')
-    .select('pnl')
+    .select('pnl, exit_time')
     .eq('session_id', sessionId)
     .eq('status', 'closed')
+    .order('exit_time', { ascending: true })
 
   if (!trades) return
 
   const totalPnl = trades.reduce((s, t) => s + Number(t.pnl), 0)
   const winning = trades.filter(t => Number(t.pnl) > 0).length
+
+  // Calculate max drawdown from equity curve
+  const cap = Number(initialCapital)
+  let peak = cap
+  let maxDD = 0
+  let running = cap
+  for (const t of trades) {
+    running += Number(t.pnl)
+    if (running > peak) peak = running
+    const dd = (peak - running) / peak
+    if (dd > maxDD) maxDD = dd
+  }
 
   await supabase
     .from('paper_sessions')
@@ -362,7 +476,8 @@ async function updateSessionStats(
       total_trades: trades.length,
       winning_trades: winning,
       net_pnl: totalPnl,
-      current_capital: Number(initialCapital) + totalPnl,
+      current_capital: cap + totalPnl,
+      max_drawdown: maxDD,
     })
     .eq('id', sessionId)
 }
