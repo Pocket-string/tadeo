@@ -479,15 +479,15 @@ async function checkSignalFull(
 
 async function getCachedHTFBias(symbol: string, currentTf: Timeframe, dbClient: SupabaseClient): Promise<'bull' | 'bear' | 'neutral'> {
   const htf: Timeframe = (currentTf === '4h' || currentTf === '1d') ? '1d' : '4h'
-  const key = `${symbol}:${htf}`
+  const key = `${symbol}:${htf}:${currentTf}`
   if (htfBiasCache.has(key)) return htfBiasCache.get(key)!
 
-  const bias = await computeHTFBias(symbol, htf, dbClient)
+  const bias = await computeHTFBias(symbol, htf, dbClient, currentTf)
   htfBiasCache.set(key, bias)
   return bias
 }
 
-async function computeHTFBias(symbol: string, htf: Timeframe, dbClient: SupabaseClient): Promise<'bull' | 'bear' | 'neutral'> {
+async function computeHTFBias(symbol: string, htf: Timeframe, dbClient: SupabaseClient, currentTf?: Timeframe): Promise<'bull' | 'bear' | 'neutral'> {
   try {
     const endDate = new Date().toISOString()
     const tfMs = getTimeframeMs(htf)
@@ -503,8 +503,15 @@ async function computeHTFBias(symbol: string, htf: Timeframe, dbClient: Supabase
     const lastEMA = ema50[ema50.length - 1].value
     const diff = (lastClose - lastEMA) / lastEMA
 
-    if (diff > 0.005) return 'bull'   // >0.5% above EMA50
-    if (diff < -0.005) return 'bear'  // >0.5% below EMA50
+    // Threshold scaled by timeframe distance: scalping needs strong HTF trend to block
+    const threshold = (currentTf === '1m' || currentTf === '5m' || currentTf === '15m')
+      ? 0.02    // 2% — only strong 4h trends block scalping signals
+      : currentTf === '1h'
+      ? 0.01    // 1% — moderate filter for intraday
+      : 0.005   // 0.5% — tight filter for swing (4h/1d)
+
+    if (diff > threshold) return 'bull'
+    if (diff < -threshold) return 'bear'
     return 'neutral'
   } catch {
     return 'neutral'
