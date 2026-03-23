@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { getMarketDataSummary } from '@/actions/market-data'
 import { getStrategies } from '@/actions/strategies'
 import { getBacktestResults } from '@/actions/backtests'
+import { getPaperTradingSummary } from '@/actions/paper-trading'
 import Link from 'next/link'
 
 export default async function DashboardPage() {
@@ -18,10 +19,11 @@ export default async function DashboardPage() {
 
   const userName = profile?.full_name || user.email?.split('@')[0] || 'Usuario'
 
-  const [marketData, strategies, backtests] = await Promise.all([
+  const [marketData, strategies, backtests, paperSummary] = await Promise.all([
     getMarketDataSummary(),
     getStrategies(),
     getBacktestResults(),
+    getPaperTradingSummary(),
   ])
 
   const totalCandles = marketData.reduce((sum, m) => sum + m.count, 0)
@@ -60,10 +62,12 @@ export default async function DashboardPage() {
           href="/backtests"
         />
         <KPICard
-          title="Estado"
-          value="Fase 2"
-          subtitle="Data Pipeline + UI"
-          href="#"
+          title="Paper Trading"
+          value={paperSummary.activeSessions}
+          subtitle={paperSummary.totalPnl >= 0
+            ? `+$${paperSummary.totalPnl.toFixed(2)} PnL total`
+            : `-$${Math.abs(paperSummary.totalPnl).toFixed(2)} PnL total`}
+          href="/paper-trading"
         />
       </div>
 
@@ -113,6 +117,42 @@ export default async function DashboardPage() {
           </div>
         )}
       </div>
+
+      {/* Paper Trading Summary */}
+      {paperSummary.activeSessions > 0 && (
+        <div className="bg-surface border border-border rounded-lg p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-foreground">Paper Trading</h2>
+            <Link href="/paper-trading" className="text-sm text-primary hover:underline">
+              Ver detalle →
+            </Link>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <p className="text-sm text-muted-foreground">Sesiones activas</p>
+              <p className="text-xl font-bold text-foreground">{paperSummary.activeSessions}</p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Trades cerrados</p>
+              <p className="text-xl font-bold text-foreground">{paperSummary.totalTrades}</p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">PnL total</p>
+              <p className={`text-xl font-bold ${paperSummary.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                {paperSummary.totalPnl >= 0 ? '+' : ''}${paperSummary.totalPnl.toFixed(2)}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Ultimo trade</p>
+              <p className="text-sm font-medium text-foreground">
+                {paperSummary.lastTradeTime
+                  ? new Date(paperSummary.lastTradeTime).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+                  : 'Sin trades'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Recent Backtests */}
       {backtests.length > 0 && (

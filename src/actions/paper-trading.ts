@@ -256,6 +256,42 @@ export async function getAgentLog(limit = 20): Promise<{
   }[]
 }
 
+export async function getPaperTradingSummary(): Promise<{
+  activeSessions: number
+  totalPnl: number
+  totalTrades: number
+  lastTradeTime: string | null
+}> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  const [{ count: activeSessions }, { data: trades }] = await Promise.all([
+    supabase
+      .from('paper_sessions')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('status', 'active'),
+    supabase
+      .from('paper_trades')
+      .select('pnl, exit_time')
+      .eq('status', 'closed')
+      .not('exit_time', 'is', null)
+      .order('exit_time', { ascending: false })
+      .limit(100),
+  ])
+
+  const totalPnl = (trades ?? []).reduce((sum, t) => sum + (Number(t.pnl) || 0), 0)
+  const lastTradeTime = trades?.[0]?.exit_time ?? null
+
+  return {
+    activeSessions: activeSessions ?? 0,
+    totalPnl,
+    totalTrades: trades?.length ?? 0,
+    lastTradeTime,
+  }
+}
+
 export async function getStrategiesForPaper(): Promise<{ id: string; name: string; symbol?: string }[]> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

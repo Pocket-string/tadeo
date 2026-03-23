@@ -19,37 +19,35 @@ export const dynamic = 'force-dynamic'
 export async function GET() {
   const supabase = getServiceClient()
 
-  const [{ count: activeSessions }, { data: lastTrade }] = await Promise.all([
+  const [{ count: activeSessions }, { data: lastLog }] = await Promise.all([
     supabase
       .from('paper_sessions')
       .select('*', { count: 'exact', head: true })
       .eq('status', 'active'),
     supabase
-      .from('paper_trades')
-      .select('exit_time')
-      .eq('status', 'closed')
-      .not('exit_time', 'is', null)
-      .order('exit_time', { ascending: false })
+      .from('paper_agent_log')
+      .select('created_at')
+      .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
   ])
 
-  const lastTradeTime = lastTrade?.exit_time ?? null
-  const minutesSinceLastTrade = lastTradeTime
-    ? Math.floor((Date.now() - new Date(lastTradeTime).getTime()) / 60000)
+  const lastLogTime = lastLog?.created_at ?? null
+  const minutesSinceLastLog = lastLogTime
+    ? Math.floor((Date.now() - new Date(lastLogTime).getTime()) / 60000)
     : null
 
-  // Cron is considered healthy if a trade was closed in the last 30 min
+  // Cron is healthy if agent logged an event in the last 10 min
   // OR if there are no active sessions (nothing to do)
   const cronHealthy =
     (activeSessions ?? 0) === 0 ||
-    minutesSinceLastTrade === null ||
-    minutesSinceLastTrade < 30
+    minutesSinceLastLog === null ||
+    minutesSinceLastLog < 10
 
   return NextResponse.json({
     activeSessions: activeSessions ?? 0,
-    lastTradeTime,
-    minutesSinceLastTrade,
+    lastLogTime,
+    minutesSinceLastLog,
     cronHealthy,
     timestamp: new Date().toISOString(),
   })

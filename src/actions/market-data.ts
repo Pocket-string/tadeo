@@ -72,16 +72,18 @@ export async function getMarketDataSummary(): Promise<MarketDataSummaryRow[]> {
       })
     )).filter(r => r.count > 0)
 
-    return results
+    return results.sort((a, b) => new Date(b.last).getTime() - new Date(a.last).getTime())
   }
 
-  return (data ?? []).map((row: { symbol: string; timeframe: string; count: number; first_ts: string; last_ts: string }) => ({
+  const mapped = (data ?? []).map((row: { symbol: string; timeframe: string; count: number; first_ts: string; last_ts: string }) => ({
     symbol: row.symbol,
     timeframe: row.timeframe,
     count: Number(row.count),
     first: row.first_ts,
     last: row.last_ts,
   }))
+
+  return mapped.sort((a: MarketDataSummaryRow, b: MarketDataSummaryRow) => new Date(b.last).getTime() - new Date(a.last).getTime())
 }
 
 const IngestSchema = z.object({

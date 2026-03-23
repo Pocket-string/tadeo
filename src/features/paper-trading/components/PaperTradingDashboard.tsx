@@ -43,6 +43,7 @@ export function PaperTradingDashboard() {
   const [attribution, setAttribution] = useState<Awaited<ReturnType<typeof getSignalAttribution>>>([])
   const [respondingProposal, setRespondingProposal] = useState<string | null>(null)
   const [attributionWindow, setAttributionWindow] = useState<15 | 30 | 50>(15)
+  const [logSort, setLogSort] = useState<'recent' | 'best'>('recent')
 
   // New session form
   const [newStrategyId, setNewStrategyId] = useState('')
@@ -260,8 +261,32 @@ export function PaperTradingDashboard() {
         {/* Agent log — last decisions */}
         {agentLog.length > 0 ? (
           <div className="border-t pt-3 space-y-1.5">
-            <p className="text-xs text-neutral-500 mb-2">Últimas {agentLog.length} decisiones del agente</p>
-            {agentLog.slice(0, 10).map(entry => {
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-neutral-500">Últimas {agentLog.length} decisiones del agente</p>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setLogSort('recent')}
+                  className={`px-2 py-0.5 text-xs rounded ${logSort === 'recent' ? 'bg-primary-100 text-primary-700 font-medium' : 'text-neutral-400 hover:text-neutral-600'}`}
+                >
+                  Recientes
+                </button>
+                <button
+                  onClick={() => setLogSort('best')}
+                  className={`px-2 py-0.5 text-xs rounded ${logSort === 'best' ? 'bg-primary-100 text-primary-700 font-medium' : 'text-neutral-400 hover:text-neutral-600'}`}
+                >
+                  Mejores
+                </button>
+              </div>
+            </div>
+            <div className="max-h-72 overflow-y-auto space-y-1.5">
+            {[...agentLog].sort((a, b) => {
+              if (logSort === 'best') {
+                const aPnl = a.pnl ?? -Infinity
+                const bPnl = b.pnl ?? -Infinity
+                return bPnl - aPnl
+              }
+              return 0 // already sorted by created_at DESC from server
+            }).map(entry => {
               const { label, color } = formatAgentEventType(entry.event_type)
               const isAction = ['buy', 'sell', 'close'].includes(entry.event_type)
               return (
@@ -286,6 +311,7 @@ export function PaperTradingDashboard() {
                 </div>
               )
             })}
+            </div>
           </div>
         ) : recentTrades.length > 0 ? (
           <div className="border-t pt-3">
