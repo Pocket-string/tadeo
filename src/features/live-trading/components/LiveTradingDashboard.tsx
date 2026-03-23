@@ -12,6 +12,7 @@ import {
   getLiveSessions,
   getLiveDashboard,
   getStrategiesForLive,
+  getBinanceBalance,
 } from '@/actions/live-trading'
 import type { LiveSession, LiveTrade, DailyReport } from '../types'
 
@@ -31,12 +32,14 @@ export function LiveTradingDashboard() {
   const [showNewSession, setShowNewSession] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [lastTickResult, setLastTickResult] = useState<string | null>(null)
+  const [binanceBalance, setBinanceBalance] = useState<{ asset: string; free: number; locked: number }[] | null>(null)
+  const [confirmStart, setConfirmStart] = useState(false)
 
   // Form state
   const [newStrategyId, setNewStrategyId] = useState('')
-  const [newSymbol, setNewSymbol] = useState('BTCUSDT')
-  const [newTimeframe, setNewTimeframe] = useState('1h')
-  const [newCapital, setNewCapital] = useState(1000)
+  const [newSymbol, setNewSymbol] = useState('SOLUSDT')
+  const [newTimeframe, setNewTimeframe] = useState('5m')
+  const [newCapital, setNewCapital] = useState(100)
 
   const loadSessions = useCallback(async () => {
     try {
@@ -70,8 +73,16 @@ export function LiveTradingDashboard() {
     return () => clearInterval(interval)
   }, [activeSession, dashboard?.session?.status, loadDashboard])
 
+  // Load Binance balance when opening new session form
+  useEffect(() => {
+    if (!showNewSession) return
+    getBinanceBalance()
+      .then(b => setBinanceBalance(b))
+      .catch(() => setBinanceBalance(null))
+  }, [showNewSession])
+
   const handleStart = async () => {
-    if (!newStrategyId) return
+    if (!newStrategyId || !confirmStart) return
     setError(null)
     try {
       const session = await startLive({
@@ -81,6 +92,7 @@ export function LiveTradingDashboard() {
         initialCapital: newCapital,
       })
       setShowNewSession(false)
+      setConfirmStart(false)
       await loadSessions()
       setActiveSession(session.id)
     } catch (e) {
@@ -216,11 +228,27 @@ export function LiveTradingDashboard() {
 
       {/* New Session Form */}
       {showNewSession && (
-        <div className="bg-white rounded-2xl shadow-card p-6 space-y-4">
+        <div className="bg-white rounded-2xl shadow-card p-6 space-y-4 border-2 border-red-200">
           <h3 className="font-semibold text-neutral-800">Iniciar Sesión Live</h3>
-          <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">
-            <strong>HUMAN GATE:</strong> Estás a punto de iniciar trading con dinero real. Confirma que la estrategia
-            ha pasado backtesting científico y paper trading exitosamente.
+
+          {/* Binance Balance */}
+          {binanceBalance && (
+            <div className="bg-neutral-50 rounded-xl p-3">
+              <p className="text-xs text-neutral-500 font-medium mb-1">Balance Binance</p>
+              <div className="flex flex-wrap gap-3">
+                {binanceBalance.map(b => (
+                  <span key={b.asset} className="text-sm font-semibold text-neutral-800">
+                    {b.asset}: {b.free.toFixed(2)} {b.locked > 0 && <span className="text-neutral-400">(+{b.locked.toFixed(2)} bloq.)</span>}
+                  </span>
+                ))}
+                {binanceBalance.length === 0 && <span className="text-sm text-red-600">Sin fondos disponibles</span>}
+              </div>
+            </div>
+          )}
+
+          <div className="bg-red-50 border-2 border-red-300 rounded-xl p-4 text-sm text-red-700">
+            <p className="font-bold text-red-800 mb-1">DINERO REAL</p>
+            <p>Las operaciones se ejecutarán en Binance con tus fondos reales. Asegúrate de que la estrategia ha sido validada en paper trading con resultados positivos.</p>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -248,7 +276,7 @@ export function LiveTradingDashboard() {
                 onChange={e => setNewTimeframe(e.target.value)}
                 className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-sm"
               >
-                {['1m', '5m', '15m', '30m', '1h', '4h', '1d'].map(tf => (
+                {['5m', '15m', '1h', '4h'].map(tf => (
                   <option key={tf} value={tf}>{tf}</option>
                 ))}
               </select>
@@ -263,12 +291,21 @@ export function LiveTradingDashboard() {
               />
             </div>
           </div>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={confirmStart}
+              onChange={e => setConfirmStart(e.target.checked)}
+              className="w-4 h-4 rounded border-red-300 text-red-600 focus:ring-red-500"
+            />
+            <span className="text-red-700 font-medium">Entiendo que puedo perder capital real con esta operación</span>
+          </label>
           <button
             onClick={handleStart}
-            disabled={!newStrategyId || strategies.length === 0}
-            className="px-6 py-2 bg-red-600 text-white rounded-xl hover:bg-red-700 transition text-sm font-medium disabled:opacity-50"
+            disabled={!newStrategyId || strategies.length === 0 || !confirmStart}
+            className="px-6 py-2 bg-red-600 text-white rounded-xl hover:bg-red-700 transition text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Confirmar e Iniciar Trading Live
+            Iniciar Trading Real
           </button>
         </div>
       )}

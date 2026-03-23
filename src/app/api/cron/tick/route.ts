@@ -10,22 +10,25 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  // Call tick-all endpoint internally
   const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
-  const res = await fetch(`${baseUrl}/api/paper-trading/tick-all`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${process.env.CRON_SECRET}`,
-    },
-    body: JSON.stringify({}),
-  })
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${process.env.CRON_SECRET}`,
+  }
 
-  const data = await res.json()
+  // Tick paper and live sessions in parallel
+  const [paperResult, liveResult] = await Promise.allSettled([
+    fetch(`${baseUrl}/api/paper-trading/tick-all`, { method: 'POST', headers, body: '{}' }),
+    fetch(`${baseUrl}/api/live-trading/tick-all`, { method: 'POST', headers, body: '{}' }),
+  ])
+
+  const paperData = paperResult.status === 'fulfilled' ? await paperResult.value.json() : { error: paperResult.reason?.message }
+  const liveData = liveResult.status === 'fulfilled' ? await liveResult.value.json() : { error: liveResult.reason?.message }
 
   return NextResponse.json({
     ok: true,
     timestamp: new Date().toISOString(),
-    results: data,
+    paper: paperData,
+    live: liveData,
   })
 }

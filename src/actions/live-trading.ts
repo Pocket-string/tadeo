@@ -109,6 +109,34 @@ export async function getLiveDashboard(sessionId: string): Promise<{
   }
 }
 
+export async function getBinanceBalance(): Promise<{ asset: string; free: number; locked: number }[]> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  try {
+    const { createBinanceClient } = await import('@/features/live-trading/services/exchangeClient')
+    const client = createBinanceClient()
+    return await client.getBalance()
+  } catch (err) {
+    throw new Error(`Binance API error: ${err instanceof Error ? err.message : 'Unknown'}`)
+  }
+}
+
+export async function getLiveAgentLog(limit = 20): Promise<{ event_type: string; reason: string; price: number | null; pnl: number | null; created_at: string; symbol: string; timeframe: string }[]> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  const { data } = await supabase
+    .from('live_agent_log')
+    .select('event_type, reason, price, pnl, created_at, symbol, timeframe')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  return (data ?? []) as { event_type: string; reason: string; price: number | null; pnl: number | null; created_at: string; symbol: string; timeframe: string }[]
+}
+
 export async function getStrategiesForLive(): Promise<{ id: string; name: string }[]> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

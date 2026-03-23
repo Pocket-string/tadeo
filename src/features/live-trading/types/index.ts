@@ -17,6 +17,7 @@ export interface LiveSession {
   winning_trades: number
   net_pnl: number
   max_drawdown_pct: number
+  risk_tier: 'conservative' | 'moderate' | 'aggressive' | null
   started_at: string
   stopped_at: string | null
   paused_at: string | null
