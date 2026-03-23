@@ -1,18 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/server'
 import { ingestFromBinance, type IngestResult } from '@/features/market-data/services/ingestPipeline'
+import { TRADING_PAIRS, getPairTimeframes, getHTFTimeframe } from '@/shared/lib/trading-pairs'
+import type { TradingPair } from '@/shared/lib/trading-pairs'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 120
 
-const DEFAULT_BACKFILL_DAYS = 90
+const DEFAULT_BACKFILL_DAYS = 270 // 9 months — enough for discovery's 6-month lookback
 
 /**
- * Auto-ingest OHLCV candles for all active paper trading pairs.
- * Fetches only missing candles (from last DB timestamp to now).
+ * Auto-ingest OHLCV candles.
+ * Phase 1: Active paper trading sessions (priority — always runs).
+ * Phase 2: ALL TRADING_PAIRS baseline (enables discovery for pairs without sessions).
  * Designed to run every 5 minutes via external cron.
  */
 export async function GET(req: NextRequest) {
+  const startTime = Date.now()
   const secret = req.headers.get('x-cron-secret') || req.nextUrl.searchParams.get('secret')
 
   if (secret !== process.env.CRON_SECRET) {
@@ -20,8 +24,11 @@ export async function GET(req: NextRequest) {
   }
 
   const supabase = createServiceClient()
+  const results: IngestResult[] = []
+  const endDate = new Date().toISOString()
+  const ingested = new Set<string>() // Track "symbol:timeframe" already handled
 
-  // 1. Get unique symbol+timeframe pairs from active sessions
+  // ── Phase 1: Active sessions (priority) ──
   const { data: sessions, error: sessError } = await supabase
     .from('paper_sessions')
     .select('symbol, timeframe')
@@ -31,30 +38,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: `Failed to query sessions: ${sessError.message}` }, { status: 500 })
   }
 
-  if (!sessions || sessions.length === 0) {
-    return NextResponse.json({ ok: true, timestamp: new Date().toISOString(), pairs: 0, message: 'No active sessions' })
-  }
-
-  // 2. Build unique pairs + HTF bias timeframes
   const pairSet = new Map<string, Set<string>>()
 
-  for (const s of sessions) {
+  for (const s of (sessions ?? [])) {
     if (!pairSet.has(s.symbol)) pairSet.set(s.symbol, new Set())
     pairSet.get(s.symbol)!.add(s.timeframe)
 
-    // Add HTF bias timeframe (mirrors computeHTFBias in paperEngine)
-    const htf = (s.timeframe === '4h' || s.timeframe === '1d') ? '1d' : '4h'
+    const htf = getHTFTimeframe(s.timeframe)
     pairSet.get(s.symbol)!.add(htf)
   }
 
-  // 3. For each pair, find last candle and ingest the gap
-  const results: IngestResult[] = []
-  const endDate = new Date().toISOString()
-
   for (const [symbol, timeframes] of pairSet) {
     for (const timeframe of timeframes) {
+      const key = `${symbol}:${timeframe}`
+      ingested.add(key)
       try {
-        // Find last candle in DB for this pair
         const { data: lastRow } = await supabase
           .from('ohlcv_candles')
           .select('timestamp')
@@ -77,6 +75,52 @@ export async function GET(req: NextRequest) {
           upserted: 0,
           errors: [err instanceof Error ? err.message : 'Unknown error'],
         })
+      }
+    }
+  }
+
+  // ── Phase 2: Baseline data for ALL TRADING_PAIRS (enables discovery) ──
+  const elapsed = Date.now() - startTime
+  if (elapsed < 100_000) { // Only if < 100s elapsed (leave 20s buffer)
+    for (const symbol of TRADING_PAIRS) {
+      if (Date.now() - startTime > 100_000) break
+
+      const timeframes = getPairTimeframes(symbol)
+      for (const timeframe of timeframes) {
+        const key = `${symbol}:${timeframe}`
+        if (ingested.has(key)) continue
+        ingested.add(key)
+
+        try {
+          // Check freshness: skip if last candle is < 1 hour old
+          const { data: lastRow } = await supabase
+            .from('ohlcv_candles')
+            .select('timestamp')
+            .eq('symbol', symbol)
+            .eq('timeframe', timeframe)
+            .order('timestamp', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+
+          if (lastRow?.timestamp) {
+            const age = Date.now() - new Date(lastRow.timestamp).getTime()
+            if (age < 60 * 60 * 1000) continue // Fresh enough (< 1h)
+          }
+
+          const startDate = lastRow?.timestamp
+            ?? new Date(Date.now() - DEFAULT_BACKFILL_DAYS * 24 * 60 * 60 * 1000).toISOString()
+
+          const result = await ingestFromBinance(symbol, timeframe, startDate, endDate)
+          results.push(result)
+        } catch (err) {
+          results.push({
+            symbol,
+            timeframe,
+            fetched: 0,
+            upserted: 0,
+            errors: [err instanceof Error ? err.message : 'Unknown error'],
+          })
+        }
       }
     }
   }
