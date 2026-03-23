@@ -24,6 +24,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // Optional: filter to specific symbols via query param (comma-separated)
+  const symbolsParam = req.nextUrl.searchParams.get('symbols')
+  const targetSymbols = symbolsParam
+    ? symbolsParam.split(',').filter(s => (TRADING_PAIRS as readonly string[]).includes(s))
+    : [...TRADING_PAIRS]
+
   const supabase = getServiceClient()
 
   // Get first user (single-tenant app)
@@ -51,8 +57,8 @@ export async function POST(req: NextRequest) {
     error?: string
   }[] = []
 
-  for (const symbol of TRADING_PAIRS) {
-    const config = PAIR_CONFIG[symbol]
+  for (const symbol of targetSymbols) {
+    const config = PAIR_CONFIG[symbol as keyof typeof PAIR_CONFIG]
     const timeframe = config.defaultTimeframe
 
     // Skip if already has an active session
@@ -82,9 +88,9 @@ export async function POST(req: NextRequest) {
         symbols: [symbol],
         timeframes: [timeframe as Timeframe],
         userId,
-        hypothesesPerMarket: 3,
-        minScore: 4,
-        monthsBack: 3,
+        hypothesesPerMarket: 5,
+        minScore: 3,
+        monthsBack: 6,
         trigger: 'batch-setup',
       })
 
