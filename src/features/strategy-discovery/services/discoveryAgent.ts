@@ -31,21 +31,38 @@ interface DiscoveryConfig {
  * Main discovery loop: SCAN → ANALYZE → HYPOTHESIZE → BACKTEST → SCORE → PROPOSE
  * Runs autonomously and saves winning strategies as proposals for human approval.
  */
-export async function runDiscoveryLoop(config: DiscoveryConfig): Promise<{
+export async function runDiscoveryLoop(config: DiscoveryConfig & { trigger?: string }): Promise<{
   proposals: number
   scanned: number
   tested: number
   errors: string[]
+  runId?: string
 }> {
   const supabase = getServiceClient()
   const hypothesesPerMarket = config.hypothesesPerMarket ?? 3
   const minScore = config.minScore ?? 5
   const monthsBack = config.monthsBack ?? 6
   const errors: string[] = []
+  const startTime = Date.now()
 
   let scanned = 0
   let tested = 0
   let proposals = 0
+  let hypothesesGenerated = 0
+  let proposalsRejected = 0
+
+  // Log run start
+  const { data: run } = await supabase
+    .from('discovery_runs')
+    .insert({
+      user_id: config.userId,
+      trigger: config.trigger ?? 'cron',
+      symbols: config.symbols,
+      timeframes: config.timeframes,
+      started_at: new Date().toISOString(),
+    })
+    .select('id')
+    .single()
 
   // Collect paper trading feedback to inform hypothesis generation
   let feedbackContext = ''
@@ -90,6 +107,7 @@ export async function runDiscoveryLoop(config: DiscoveryConfig): Promise<{
 
         // Step 3: HYPOTHESIZE — AI generates strategy combinations (informed by paper trading feedback)
         const hypotheses = await generateHypotheses(context, hypothesesPerMarket, feedbackContext)
+        hypothesesGenerated += hypotheses.length
 
         // Step 4: BACKTEST + OPTIMIZE each hypothesis
         for (const hypothesis of hypotheses) {
@@ -102,7 +120,10 @@ export async function runDiscoveryLoop(config: DiscoveryConfig): Promise<{
               timeframe
             )
 
-            if (!result || result.score < minScore) continue
+            if (!result || result.score < minScore) {
+              proposalsRejected++
+              continue
+            }
 
             // Step 5: PROPOSE — Save to DB for human approval
             const { error: insertErr } = await supabase
@@ -135,7 +156,23 @@ export async function runDiscoveryLoop(config: DiscoveryConfig): Promise<{
     }
   }
 
-  return { proposals, scanned, tested, errors }
+  // Log run completion
+  if (run?.id) {
+    await supabase
+      .from('discovery_runs')
+      .update({
+        hypotheses_generated: hypothesesGenerated,
+        hypotheses_tested: tested,
+        proposals_saved: proposals,
+        proposals_rejected: proposalsRejected,
+        errors,
+        duration_ms: Date.now() - startTime,
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', run.id)
+  }
+
+  return { proposals, scanned, tested, errors, runId: run?.id }
 }
 
 /**

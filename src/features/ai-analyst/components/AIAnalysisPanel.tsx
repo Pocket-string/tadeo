@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { FullAnalysisResult } from '@/actions/ai-analysis'
-import type { StrategyProposal } from '../types'
+import type { StrategyProposal, MarketAnalysis } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'] as const
 
@@ -14,6 +14,15 @@ export function AIAnalysisPanel({ availableSymbols }: { availableSymbols: string
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [history, setHistory] = useState<{ id: string; name: string; created_at: string; session?: { status: string; net_pnl: number; total_trades: number; winning_trades: number } }[]>([])
+  const [multiAnalysis, setMultiAnalysis] = useState<{ symbol: string; timeframe: string; analysis: MarketAnalysis }[]>([])
+  const [multiLoading, setMultiLoading] = useState(false)
+
+  useEffect(() => {
+    import('@/actions/ai-analysis').then(({ getAIStrategyHistory }) => {
+      getAIStrategyHistory().then(setHistory).catch(() => {})
+    })
+  }, [saved])
 
   async function handleAnalyze() {
     setLoading(true)
@@ -97,17 +106,118 @@ export function AIAnalysisPanel({ availableSymbols }: { availableSymbols: string
             </div>
           </div>
 
-          <div className="flex items-end">
+          <div className="flex items-end gap-2">
             <button
               onClick={handleAnalyze}
               disabled={loading}
-              className="w-full py-2.5 bg-primary text-primary-foreground rounded-md font-medium text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-md font-medium text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
             >
               {loading ? 'Analizando...' : 'Analizar con AI'}
+            </button>
+            <button
+              onClick={async () => {
+                setMultiLoading(true)
+                setMultiAnalysis([])
+                try {
+                  const { runQuickAnalysisAll } = await import('@/actions/ai-analysis')
+                  const data = await runQuickAnalysisAll()
+                  setMultiAnalysis(data)
+                } catch {
+                  setError('Error al analizar multiples simbolos')
+                } finally {
+                  setMultiLoading(false)
+                }
+              }}
+              disabled={multiLoading}
+              className="py-2.5 px-4 border border-border rounded-md text-sm text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors disabled:opacity-50 whitespace-nowrap"
+            >
+              {multiLoading ? 'Escaneando...' : 'Analizar activos'}
             </button>
           </div>
         </div>
       </div>
+
+      {/* Multi-Symbol Analysis Grid */}
+      {multiAnalysis.length > 0 && (
+        <div className="bg-surface border border-border rounded-lg p-6">
+          <h3 className="font-semibold text-foreground mb-4">Analisis Multi-Simbolo</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="text-left py-2 text-muted-foreground font-medium">Par</th>
+                  <th className="text-left py-2 text-muted-foreground font-medium">Tendencia</th>
+                  <th className="text-left py-2 text-muted-foreground font-medium">RSI</th>
+                  <th className="text-left py-2 text-muted-foreground font-medium">Volatilidad</th>
+                  <th className="text-left py-2 text-muted-foreground font-medium">Sesgo</th>
+                  <th className="text-right py-2 text-muted-foreground font-medium">Confianza</th>
+                </tr>
+              </thead>
+              <tbody>
+                {multiAnalysis.map(({ symbol: s, timeframe: tf, analysis: a }) => (
+                  <tr
+                    key={`${s}-${tf}`}
+                    className="border-b border-border/50 hover:bg-background/50 cursor-pointer"
+                    onClick={() => { setSymbol(s); setTimeframe(tf); }}
+                  >
+                    <td className="py-2.5 font-mono font-medium text-foreground">{s} <span className="text-muted-foreground text-xs">{tf}</span></td>
+                    <td className="py-2.5">
+                      <span className={a.trend.direction === 'bullish' ? 'text-green-500' : a.trend.direction === 'bearish' ? 'text-red-500' : 'text-yellow-500'}>
+                        {a.trend.direction === 'bullish' ? '↑' : a.trend.direction === 'bearish' ? '↓' : '→'} {a.trend.strength}
+                      </span>
+                    </td>
+                    <td className="py-2.5">
+                      <span className={a.momentum.rsiZone === 'oversold' ? 'text-green-500' : a.momentum.rsiZone === 'overbought' ? 'text-red-500' : 'text-muted-foreground'}>
+                        {a.momentum.rsiZone}
+                      </span>
+                    </td>
+                    <td className="py-2.5 text-muted-foreground capitalize">{a.volatility.state}</td>
+                    <td className="py-2.5"><OverallBiasBadge bias={a.overallBias} /></td>
+                    <td className="py-2.5 text-right font-mono">{Math.round(a.confidence * 100)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">Click en un par para analizarlo en detalle</p>
+        </div>
+      )}
+
+      {/* AI Strategy History */}
+      {history.length > 0 && (
+        <div className="bg-surface border border-border rounded-lg p-6">
+          <h3 className="font-semibold text-foreground mb-3">Historial de Estrategias AI</h3>
+          <div className="space-y-2">
+            {history.map(h => (
+              <div key={h.id} className="flex items-center justify-between text-sm p-2 bg-background rounded-md">
+                <div>
+                  <span className="text-foreground font-medium">{h.name.replace('[AI Generated] ', '')}</span>
+                  <span className="text-xs text-muted-foreground ml-2">
+                    {new Date(h.created_at).toLocaleDateString('es')}
+                  </span>
+                </div>
+                {h.session ? (
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      h.session.status === 'active' ? 'bg-green-500/10 text-green-500' : 'bg-foreground/10 text-muted-foreground'
+                    }`}>
+                      {h.session.status}
+                    </span>
+                    <span className={`font-mono text-sm ${h.session.net_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {h.session.net_pnl >= 0 ? '+' : ''}${h.session.net_pnl.toFixed(2)}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {h.session.total_trades > 0 ? `WR: ${Math.round((h.session.winning_trades / h.session.total_trades) * 100)}%` : '0 trades'}
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-xs text-muted-foreground">Sin sesion activa</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="p-4 rounded-md bg-red-500/10 border border-red-500/20 text-sm text-red-500">

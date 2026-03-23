@@ -57,6 +57,7 @@ export async function GET(req: NextRequest) {
     hypothesesPerMarket: 3,
     minScore: 5,
     monthsBack: 6,
+    trigger: 'cron',
   })
 
   return NextResponse.json({
@@ -97,6 +98,7 @@ export async function POST(req: NextRequest) {
     hypothesesPerMarket: 2,
     minScore: 6, // Higher bar for auto-deployed sessions
     monthsBack: 6,
+    trigger: 'auto-retire',
     failureContext: failureReason
       ? `SESIÓN RETIRADA (${symbol} ${timeframe}): ${failureReason}. Genera hipótesis que EVITEN este problema.`
       : undefined,

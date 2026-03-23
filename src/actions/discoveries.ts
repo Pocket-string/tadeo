@@ -5,6 +5,24 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import type { StrategyParameters } from '@/types/database'
 import type { ProposalRecord } from '@/features/strategy-discovery/types'
+import { runDiscoveryLoop } from '@/features/strategy-discovery/services/discoveryAgent'
+import type { Timeframe } from '@/features/market-data/types'
+
+export interface DiscoveryRun {
+  id: string
+  trigger: string
+  symbols: string[]
+  timeframes: string[]
+  hypotheses_generated: number
+  hypotheses_tested: number
+  proposals_saved: number
+  proposals_rejected: number
+  errors: string[]
+  duration_ms: number | null
+  started_at: string
+  completed_at: string | null
+  created_at: string
+}
 
 export async function getProposals(): Promise<ProposalRecord[]> {
   const supabase = await createClient()
@@ -117,4 +135,58 @@ export async function rejectProposal(proposalId: string): Promise<void> {
     .eq('user_id', user.id)
 
   revalidatePath('/discoveries')
+}
+
+export async function getDiscoveryRuns(limit = 10): Promise<DiscoveryRun[]> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return redirect('/login')
+
+  const { data, error } = await supabase
+    .from('discovery_runs')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  if (error) throw new Error(`Failed to fetch runs: ${error.message}`)
+  return (data ?? []) as DiscoveryRun[]
+}
+
+export async function triggerManualDiscovery(minScore = 4): Promise<{
+  proposals: number
+  scanned: number
+  tested: number
+  errors: string[]
+}> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return redirect('/login')
+
+  // Get active sessions for this user
+  const { data: sessions } = await supabase
+    .from('paper_sessions')
+    .select('symbol, timeframe')
+    .eq('user_id', user.id)
+    .eq('status', 'active')
+
+  if (!sessions || sessions.length === 0) {
+    return { proposals: 0, scanned: 0, tested: 0, errors: ['No active paper trading sessions'] }
+  }
+
+  const symbols = [...new Set(sessions.map(s => s.symbol))]
+  const timeframes = [...new Set(sessions.map(s => s.timeframe))] as Timeframe[]
+
+  const result = await runDiscoveryLoop({
+    symbols,
+    timeframes,
+    userId: user.id,
+    hypothesesPerMarket: 3,
+    minScore,
+    monthsBack: 6,
+    trigger: 'manual',
+  })
+
+  revalidatePath('/discoveries')
+  return result
 }

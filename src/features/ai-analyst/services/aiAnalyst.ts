@@ -138,8 +138,9 @@ export async function buildAnalysisContext(
 
 /**
  * AI analyzes market conditions based on indicator context.
+ * Optional paperFeedback provides context from past paper trading performance.
  */
-export async function analyzeMarket(context: AnalysisContext): Promise<MarketAnalysis> {
+export async function analyzeMarket(context: AnalysisContext, paperFeedback?: string): Promise<MarketAnalysis> {
   const model = getModelInstance()
 
   const prompt = `You are a quantitative trading analyst. Analyze these market conditions and provide a structured analysis.
@@ -167,7 +168,7 @@ Respond with ONLY valid JSON matching this exact structure:
   "reasoning": "..."
 }
 
-Be precise and data-driven. No speculation, only what indicators show.`
+Be precise and data-driven. No speculation, only what indicators show.${paperFeedback ? `\n\nPAPER TRADING FEEDBACK (use to calibrate your analysis):\n${paperFeedback}` : ''}`
 
   const { text } = await generateText({
     model,
@@ -186,7 +187,8 @@ Be precise and data-driven. No speculation, only what indicators show.`
  */
 export async function proposeStrategy(
   context: AnalysisContext,
-  analysis: MarketAnalysis
+  analysis: MarketAnalysis,
+  paperFeedback?: string
 ): Promise<StrategyProposal> {
   const model = getModelInstance()
 
@@ -207,7 +209,7 @@ CONSTRAINTS:
 - RSI period: 5-30, overbought: 60-90, oversold: 10-40
 - MACD fast: 5-20, slow: 15-50, signal: 5-15
 - BB period: 10-30, std dev: 1-3
-- Parameters must be appropriate for the detected market regime
+- Parameters must be appropriate for the detected market regime${paperFeedback ? `\n\nPAPER TRADING PERFORMANCE (favor combos that worked, avoid those that failed):\n${paperFeedback}` : ''}
 
 Respond with ONLY valid JSON:
 {
