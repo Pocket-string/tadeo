@@ -25,7 +25,8 @@ export async function getMarketDataSummary(): Promise<MarketDataSummaryRow[]> {
 
   if (error) {
     // Fallback: enumerate all known symbol/timeframe combos deterministically
-    const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT']
+    const { TRADING_PAIRS } = await import('@/shared/lib/trading-pairs')
+    const symbols = [...TRADING_PAIRS]
     const timeframes = ['5m', '15m', '1h', '4h', '1d']
     const uniquePairs: { symbol: string; timeframe: string }[] = []
 

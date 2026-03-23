@@ -3,8 +3,10 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+import { TRADING_PAIRS } from '@/shared/lib/trading-pairs'
+
 const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'] as const
-const POPULAR_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT']
+const POPULAR_SYMBOLS = [...TRADING_PAIRS]
 
 interface IngestResult {
   symbol: string

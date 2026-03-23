@@ -187,9 +187,16 @@ async function backtestAndOptimize(
 ): Promise<DiscoveryResult | null> {
   const capital = 100
 
-  // Initial backtest
+  // Walk-Forward Validation: train on 70%, validate on 30%
+  const splitIdx = Math.floor(candles.length * 0.7)
+  const trainCandles = candles.slice(0, splitIdx)
+  const validCandles = candles.slice(splitIdx)
+
+  if (trainCandles.length < 50 || validCandles.length < 20) return null
+
+  // Initial backtest on TRAINING set only
   const baseResult = await simulateOnCandles(
-    candles,
+    trainCandles,
     hypothesis.baseParams,
     capital,
     symbol,
@@ -199,7 +206,7 @@ async function backtestAndOptimize(
 
   const baseScore = await scoreResult(baseResult)
 
-  // Quick optimization: 10 generations × 8 population (smaller than full optimizer)
+  // Quick optimization on TRAINING set: 10 generations × 8 population
   let bestResult = baseResult
   let bestScore = baseScore
   let bestParams = hypothesis.baseParams
@@ -207,7 +214,7 @@ async function backtestAndOptimize(
   for (let gen = 0; gen < 10; gen++) {
     for (let i = 0; i < 8; i++) {
       const mutated = quickMutate(bestParams)
-      const result = await simulateOnCandles(candles, mutated, capital, symbol, timeframe, 0.02)
+      const result = await simulateOnCandles(trainCandles, mutated, capital, symbol, timeframe, 0.02)
       const score = await scoreResult(result)
 
       if (score > bestScore) {
@@ -218,8 +225,19 @@ async function backtestAndOptimize(
     }
   }
 
-  // Minimum quality gate
-  if (bestResult.metrics.totalTrades < 5 || bestScore < 0) return null
+  // Minimum quality gate on training set
+  if (bestResult.metrics.totalTrades < 15 || bestScore < 0) return null
+
+  // Walk-Forward Validation: run best params on UNSEEN validation data
+  const validation = await simulateOnCandles(validCandles, bestParams, capital, symbol, timeframe, 0.02)
+  if (validation.metrics.totalTrades < 5 || validation.metrics.winRate < 0.40 || validation.metrics.netPnlPct < 0) {
+    return null // Failed out-of-sample validation — likely overfitted
+  }
+
+  // Use FULL dataset metrics for the proposal (but only if validation passed)
+  const fullResult = await simulateOnCandles(candles, bestParams, capital, symbol, timeframe, 0.02)
+  bestResult = fullResult
+  bestScore = await scoreResult(fullResult)
 
   // Simple AI review based on metrics (avoid API call for speed)
   const review = quickReview(bestResult)

@@ -8,7 +8,9 @@ import { DEFAULT_STRATEGY_PARAMS } from '@/types/database'
 import type { Timeframe } from '@/features/market-data/types'
 import { RISK_TIERS, type RiskTier } from '../types'
 
-const SYMBOLS = ['SOLUSDT', 'ETHUSDT', 'BNBUSDT', 'BTCUSDT']
+import { TRADING_PAIRS } from '@/shared/lib/trading-pairs'
+
+const SYMBOLS = [...TRADING_PAIRS]
 const TIMEFRAMES: Timeframe[] = ['5m', '15m', '1h', '4h']
 const RISK_TIER_KEYS: RiskTier[] = ['conservative', 'moderate', 'aggressive']
 

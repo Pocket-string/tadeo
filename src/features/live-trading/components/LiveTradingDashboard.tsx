@@ -15,6 +15,7 @@ import {
   getBinanceBalance,
 } from '@/actions/live-trading'
 import type { LiveSession, LiveTrade, DailyReport } from '../types'
+import { TRADING_PAIRS } from '@/shared/lib/trading-pairs'
 
 export function LiveTradingDashboard() {
   const [sessions, setSessions] = useState<LiveSession[]>([])
@@ -263,11 +264,13 @@ export function LiveTradingDashboard() {
             </div>
             <div>
               <label className="block text-xs text-neutral-500 mb-1">Símbolo</label>
-              <input
+              <select
                 value={newSymbol}
-                onChange={e => setNewSymbol(e.target.value.toUpperCase())}
+                onChange={e => setNewSymbol(e.target.value)}
                 className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-sm"
-              />
+              >
+                {TRADING_PAIRS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
             </div>
             <div>
               <label className="block text-xs text-neutral-500 mb-1">Timeframe</label>

@@ -24,6 +24,11 @@ import type { RegimeResult } from '@/features/indicators/types'
 // TURBO SIMULATOR: Months of paper trading in seconds
 // ============================================================
 
+// Slippage constants (match paper tick-all for realistic backtests)
+const ENTRY_SLIPPAGE = 0.0005   // 0.05% on entry fills
+const SL_SLIPPAGE = 0.001       // 0.1% on stop loss exits (worst case)
+const TP_SLIPPAGE = 0.0005      // 0.05% on take profit exits
+
 export interface SimTrade {
   type: 'buy' | 'sell'
   entryTime: string
@@ -195,11 +200,21 @@ export async function simulateOnCandles(
         exitPrice = candle.close
         exitReason = 'time_exit'
       } else if (position.type === 'buy') {
-        if (candle.low <= position.stopLoss) { exitPrice = position.stopLoss; exitReason = 'stop_loss' }
-        else if (candle.high >= position.takeProfit) { exitPrice = position.takeProfit; exitReason = 'take_profit' }
+        if (candle.low <= position.stopLoss) {
+          exitPrice = position.stopLoss * (1 - SL_SLIPPAGE) // Slippage worsens SL
+          exitReason = 'stop_loss'
+        } else if (candle.high >= position.takeProfit) {
+          exitPrice = position.takeProfit * (1 - TP_SLIPPAGE) // Slippage reduces TP
+          exitReason = 'take_profit'
+        }
       } else {
-        if (candle.high >= position.stopLoss) { exitPrice = position.stopLoss; exitReason = 'stop_loss' }
-        else if (candle.low <= position.takeProfit) { exitPrice = position.takeProfit; exitReason = 'take_profit' }
+        if (candle.high >= position.stopLoss) {
+          exitPrice = position.stopLoss * (1 + SL_SLIPPAGE) // Slippage worsens SL for short
+          exitReason = 'stop_loss'
+        } else if (candle.low <= position.takeProfit) {
+          exitPrice = position.takeProfit * (1 + TP_SLIPPAGE) // Slippage reduces TP for short
+          exitReason = 'take_profit'
+        }
       }
 
       if (exitPrice !== null) {
@@ -254,10 +269,15 @@ export async function simulateOnCandles(
               const tp = signal === 'buy' ? candle.close + currentATR * tpMult : candle.close - currentATR * tpMult
               const trailAct = signal === 'buy' ? candle.close + currentATR : candle.close - currentATR
 
+              // Apply entry slippage (buy higher, sell lower)
+              const entryPrice = signal === 'buy'
+                ? candle.close * (1 + ENTRY_SLIPPAGE)
+                : candle.close * (1 - ENTRY_SLIPPAGE)
+
               position = {
                 type: signal,
                 entryTime: ts,
-                entryPrice: candle.close,
+                entryPrice,
                 quantity: qty,
                 stopLoss: sl,
                 takeProfit: tp,
@@ -390,7 +410,7 @@ function mutateParams(base: StrategyParameters): StrategyParameters {
 
 export async function scoreResult(r: SimResult): Promise<number> {
   const m = r.metrics
-  if (m.totalTrades < 5) return -100 // Not enough trades
+  if (m.totalTrades < 15) return -100 // Need statistical significance
 
   let score = 0
 
