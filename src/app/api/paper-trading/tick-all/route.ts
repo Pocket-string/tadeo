@@ -383,7 +383,9 @@ async function getCachedATR(key: string, symbol: string, timeframe: Timeframe, d
 async function getCurrentATR(symbol: string, timeframe: Timeframe, dbClient: SupabaseClient): Promise<number | null> {
   try {
     const endDate = new Date().toISOString()
-    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    const tfMs = getTimeframeMs(timeframe)
+    const lookbackMs = tfMs > 0 ? tfMs * 120 : 30 * 24 * 60 * 60 * 1000
+    const startDate = new Date(Date.now() - lookbackMs).toISOString()
     const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 100 }, { client: dbClient })
     if (candles.length < 20) return null
 
@@ -405,13 +407,16 @@ async function checkSignalFull(
   dbClient: SupabaseClient
 ): Promise<SignalCheckResult> {
   const endDate = new Date().toISOString()
-  const startDate = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
+  // Calculate startDate based on timeframe so we get the ~200 most recent candles
+  // (not the 200 oldest in a 60-day window — that caused stale_data for short timeframes)
+  const tfMs = getTimeframeMs(timeframe)
+  const lookbackMs = tfMs > 0 ? tfMs * 250 : 60 * 24 * 60 * 60 * 1000 // 250 candles or 60 days fallback
+  const startDate = new Date(Date.now() - lookbackMs).toISOString()
 
-  const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 200 }, { client: dbClient })
+  const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 500 }, { client: dbClient })
   if (candles.length < 50) return { signal: null, rejectionReason: `insufficient_candles:${candles.length}` }
 
   // Staleness check — reject if last candle is older than 3 candle periods
-  const tfMs = getTimeframeMs(timeframe)
   if (tfMs > 0) {
     const lastTs = new Date(candles[candles.length - 1].timestamp).getTime()
     const staleness = Date.now() - lastTs
@@ -485,7 +490,9 @@ async function getCachedHTFBias(symbol: string, currentTf: Timeframe, dbClient: 
 async function computeHTFBias(symbol: string, htf: Timeframe, dbClient: SupabaseClient): Promise<'bull' | 'bear' | 'neutral'> {
   try {
     const endDate = new Date().toISOString()
-    const startDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString()
+    const tfMs = getTimeframeMs(htf)
+    const lookbackMs = tfMs > 0 ? tfMs * 120 : 120 * 24 * 60 * 60 * 1000
+    const startDate = new Date(Date.now() - lookbackMs).toISOString()
     const candles = await getCandles({ symbol, timeframe: htf, startDate, endDate, limit: 60 }, { client: dbClient })
     if (candles.length < 50) return 'neutral'
 
