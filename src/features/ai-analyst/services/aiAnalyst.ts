@@ -5,6 +5,7 @@ import type { LanguageModel } from 'ai'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { getCandles } from '@/features/market-data/services/marketDataService'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { calculateEMA, calculateMACD, calculateRSI, calculateBollingerBands } from '@/features/indicators/services/indicatorEngine'
 import { MarketAnalysisSchema, StrategyProposalSchema } from '../types'
 import type { MarketAnalysis, StrategyProposal, AnalysisContext } from '../types'
@@ -50,7 +51,8 @@ function getModelInstance(): LanguageModel {
  */
 export async function buildAnalysisContext(
   symbol: string,
-  timeframe: string
+  timeframe: string,
+  options?: { client?: SupabaseClient }
 ): Promise<AnalysisContext> {
   const endDate = new Date().toISOString()
   const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
@@ -60,7 +62,7 @@ export async function buildAnalysisContext(
     timeframe: timeframe as Timeframe,
     startDate,
     endDate,
-  })
+  }, { client: options?.client })
 
   if (candles.length < 50) {
     throw new Error(`Insufficient data: ${candles.length} candles (need 50+). Ingest data first.`)

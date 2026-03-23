@@ -102,8 +102,8 @@ export async function runDiscoveryLoop(config: DiscoveryConfig & { trigger?: str
           continue
         }
 
-        // Step 2: ANALYZE — Build market context
-        const context = await buildAnalysisContext(symbol, timeframe)
+        // Step 2: ANALYZE — Build market context (pass service client to bypass RLS in cron context)
+        const context = await buildAnalysisContext(symbol, timeframe, { client: supabase })
 
         // Step 3: HYPOTHESIZE — AI generates strategy combinations (informed by paper trading feedback)
         const hypotheses = await generateHypotheses(context, hypothesesPerMarket, feedbackContext)
