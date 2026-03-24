@@ -21,7 +21,7 @@ const SLIPPAGE_TP = 0.0005  // 0.05% — take profit exits (limit order, less sl
 const SLIPPAGE_ENTRY = 0.0005 // 0.05% — entry fills (market order but no urgency)
 
 // ── Circuit Breaker thresholds ──────────────────────────────────────────────
-const MAX_DRAWDOWN_PCT = 0.25      // 25% max drawdown before auto-pause (aligned with evaluate auto-retire)
+const MAX_DRAWDOWN_PCT = 0.15      // 15% max drawdown before auto-pause
 const MAX_CONSECUTIVE_LOSSES = 3   // pause after N consecutive losses
 const COOLDOWN_MS = 60 * 60 * 1000 // 1 hour cooldown after consecutive losses
 

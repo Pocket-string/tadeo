@@ -139,7 +139,10 @@ export async function POST(req: NextRequest) {
           name: strategyName,
           description: `Auto-discovered by AI. ${bestProposal.ai_rationale}. ${metrics.totalTrades} trades backtested. Sharpe: ${metrics.sharpeRatio.toFixed(2)}. Walk-forward validated.`,
           status: 'validated',
-          parameters: params,
+          parameters: {
+            ...params,
+            signal_systems: bestProposal.signal_config ?? undefined,
+          },
         })
         .select('id')
         .single()

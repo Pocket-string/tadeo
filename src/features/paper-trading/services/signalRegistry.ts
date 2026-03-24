@@ -406,6 +406,18 @@ export const MEAN_REVERSION_CONFIG: SignalSystemConfig[] = [
   { id: 'engulfing-sr', weight: 1.3, enabled: true },
 ]
 
+/** SOLUSDT/5m optimized: disable toxic signals (adx-trend, double-pattern, rsi-divergence) based on 130 live trades.
+ *  Only proven signals: bb-mean-rev (13W/0L), ema-cross (WR 87.5%), volume-confirm, engulfing-sr */
+export const SOLUSDT_5M_CONFIG: SignalSystemConfig[] = [
+  { id: 'ema-cross', weight: 1.2, enabled: true },
+  { id: 'bb-mean-rev', weight: 1.5, enabled: true },
+  { id: 'adx-trend', weight: 0.3, enabled: false },
+  { id: 'double-pattern', weight: 0.3, enabled: false },
+  { id: 'rsi-divergence', weight: 0.3, enabled: false },
+  { id: 'volume-confirm', weight: 1.0, enabled: true },
+  { id: 'engulfing-sr', weight: 1.3, enabled: true },
+]
+
 /** All available strategy presets for UI selection */
 export const STRATEGY_PRESETS = {
   legacy: { name: 'Clasica (3 sistemas)', config: LEGACY_SIGNAL_CONFIG, description: 'EMA cross + BB mean-reversion + ADX trend' },
@@ -413,6 +425,7 @@ export const STRATEGY_PRESETS = {
   patternConfluence: { name: 'Confluencia de Patrones', config: PATTERN_CONFLUENCE_CONFIG, description: 'Price-action puro: doble techo/piso + divergencia RSI + engulfing en S/R' },
   trendMomentum: { name: 'Tendencia + Momentum', config: TREND_MOMENTUM_CONFIG, description: 'Solo entra en tendencias confirmadas por volumen y momentum' },
   meanReversion: { name: 'Reversion a la Media', config: MEAN_REVERSION_CONFIG, description: 'Compra en soporte extremo, vende en resistencia extrema' },
+  solusdt5m: { name: 'SOLUSDT/5m Optimizado', config: SOLUSDT_5M_CONFIG, description: 'Solo señales probadas en SOL 5m: bb-mean-rev + ema-cross + engulfing (130 trades de aprendizaje)' },
 } as const
 
 // ─── Regime-Adaptive Composite ──────────────────────────────────────────────

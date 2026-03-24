@@ -15,9 +15,18 @@ export interface SignalComboPerformance {
   tradeCount: number
 }
 
+export interface SignalPerformance {
+  name: string
+  winRate: number
+  pnl: number
+  trades: number
+}
+
 export interface PaperFeedback {
   bestSignalCombos: SignalComboPerformance[]
   worstSignalCombos: SignalComboPerformance[]
+  toxicSignals: SignalPerformance[]
+  starSignals: SignalPerformance[]
   retiredStrategies: { symbol: string; timeframe: string; reason: string }[]
   activeStrategies: { symbol: string; timeframe: string; strategyName: string }[]
   overallStats: {
@@ -45,10 +54,10 @@ export async function collectPaperFeedback(userId: string): Promise<PaperFeedbac
   const activeSessions = allSessions.filter(s => s.status === 'active')
   const profitableSessions = allSessions.filter(s => Number(s.net_pnl) > 0 && Number(s.total_trades) >= 5)
 
-  // Get all closed trades grouped by strategy
+  // Get all closed trades grouped by strategy (include metadata for per-signal analysis)
   const { data: allTrades } = await supabase
     .from('paper_trades')
-    .select('strategy_id, pnl, pnl_pct, status')
+    .select('strategy_id, pnl, pnl_pct, status, metadata')
     .eq('user_id', userId)
     .eq('status', 'closed')
 
@@ -88,19 +97,51 @@ export async function collectPaperFeedback(userId: string): Promise<PaperFeedbac
     })
   }
 
+  // Per-signal performance from trade metadata (active_systems)
+  const signalPerf = new Map<string, { wins: number; losses: number; totalPnl: number }>()
+  for (const t of trades) {
+    const meta = t.metadata as { active_systems?: string[] } | null
+    if (!meta?.active_systems) continue
+    for (const sys of meta.active_systems) {
+      // Extract signal name like "double-pattern:short(49%)" → "double-pattern:short"
+      const signalName = sys.replace(/\(\d+%\)/, '').trim()
+      if (!signalPerf.has(signalName)) signalPerf.set(signalName, { wins: 0, losses: 0, totalPnl: 0 })
+      const perf = signalPerf.get(signalName)!
+      const pnl = Number(t.pnl)
+      perf.totalPnl += pnl
+      if (pnl > 0) perf.wins++
+      else perf.losses++
+    }
+  }
+
+  // Identify toxic and star signals
+  const toxicSignals: { name: string; winRate: number; pnl: number; trades: number }[] = []
+  const starSignals: { name: string; winRate: number; pnl: number; trades: number }[] = []
+  for (const [name, perf] of signalPerf) {
+    const total = perf.wins + perf.losses
+    if (total < 5) continue
+    const wr = perf.wins / total
+    if (wr < 0.35 && perf.totalPnl < 0) toxicSignals.push({ name, winRate: wr, pnl: perf.totalPnl, trades: total })
+    else if (wr > 0.65 && perf.totalPnl > 0) starSignals.push({ name, winRate: wr, pnl: perf.totalPnl, trades: total })
+  }
+  toxicSignals.sort((a, b) => a.pnl - b.pnl) // worst first
+  starSignals.sort((a, b) => b.pnl - a.pnl)  // best first
+
   // Sort by avg PnL
   comboPerf.sort((a, b) => b.avgPnlPct - a.avgPnlPct)
 
-  // Retired strategies
+  // Failed strategies: stopped/paused sessions OR retired strategies (all provide negative feedback)
   const retired = allSessions
     .filter(s => {
       const strat = s.strategies as { status: string } | null
-      return s.status === 'stopped' && strat?.status === 'retired'
+      return (s.status === 'stopped' || s.status === 'paused') ||
+        strat?.status === 'retired'
     })
+    .filter(s => Number(s.net_pnl) < 0 && Number(s.total_trades) >= 5)
     .map(s => ({
       symbol: s.symbol,
       timeframe: s.timeframe,
-      reason: `Net PnL: ${Number(s.net_pnl).toFixed(2)}, WR: ${s.total_trades > 0 ? ((s.winning_trades / s.total_trades) * 100).toFixed(0) : 0}%`,
+      reason: `Net PnL: ${Number(s.net_pnl).toFixed(2)}, WR: ${s.total_trades > 0 ? ((s.winning_trades / s.total_trades) * 100).toFixed(0) : 0}%, DD: ${(Number(s.max_drawdown) * 100).toFixed(1)}%`,
     }))
 
   // Active strategies
@@ -121,6 +162,8 @@ export async function collectPaperFeedback(userId: string): Promise<PaperFeedbac
   return {
     bestSignalCombos: comboPerf.filter(c => c.avgPnlPct > 0).slice(0, 5),
     worstSignalCombos: comboPerf.filter(c => c.avgPnlPct <= 0).slice(-5).reverse(),
+    toxicSignals: toxicSignals.slice(0, 10),
+    starSignals: starSignals.slice(0, 10),
     retiredStrategies: retired,
     activeStrategies: active,
     overallStats: {
@@ -152,10 +195,31 @@ export function formatFeedbackForPrompt(feedback: PaperFeedback): string {
     }
   }
 
+  if (feedback.toxicSignals.length > 0) {
+    lines.push('TOXIC individual signals (MUST AVOID or disable these):')
+    for (const s of feedback.toxicSignals) {
+      lines.push(`  - ${s.name}: WR ${(s.winRate * 100).toFixed(0)}%, PnL $${s.pnl.toFixed(2)} (${s.trades} trades)`)
+    }
+  }
+
+  if (feedback.starSignals.length > 0) {
+    lines.push('STAR individual signals (prioritize these):')
+    for (const s of feedback.starSignals) {
+      lines.push(`  - ${s.name}: WR ${(s.winRate * 100).toFixed(0)}%, PnL $${s.pnl.toFixed(2)} (${s.trades} trades)`)
+    }
+  }
+
   if (feedback.activeStrategies.length > 0) {
     lines.push('Currently active strategies (avoid duplication):')
     for (const s of feedback.activeStrategies) {
       lines.push(`  - ${s.symbol}/${s.timeframe}: ${s.strategyName}`)
+    }
+  }
+
+  if (feedback.retiredStrategies.length > 0) {
+    lines.push('Failed/stopped strategies (learn from these failures):')
+    for (const s of feedback.retiredStrategies) {
+      lines.push(`  - ${s.symbol}/${s.timeframe}: ${s.reason}`)
     }
   }
 

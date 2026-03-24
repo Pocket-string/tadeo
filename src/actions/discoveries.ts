@@ -70,7 +70,10 @@ export async function approveProposal(proposalId: string): Promise<{ strategyId:
       name: strategyName,
       description: `Auto-discovered by AI. ${proposal.ai_rationale}. ${metrics.totalTrades} trades backtested. Sharpe: ${metrics.sharpeRatio.toFixed(2)}`,
       status: 'validated',
-      parameters: params,
+      parameters: {
+        ...params,
+        signal_systems: proposal.signal_config ?? undefined,
+      },
     })
     .select('id')
     .single()
