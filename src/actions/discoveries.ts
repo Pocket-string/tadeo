@@ -5,8 +5,6 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import type { StrategyParameters } from '@/types/database'
 import type { ProposalRecord } from '@/features/strategy-discovery/types'
-import { runDiscoveryLoop } from '@/features/strategy-discovery/services/discoveryAgent'
-import type { Timeframe } from '@/features/market-data/types'
 
 export interface DiscoveryRun {
   id: string
@@ -153,7 +151,7 @@ export async function getDiscoveryRuns(limit = 10): Promise<DiscoveryRun[]> {
   return (data ?? []) as DiscoveryRun[]
 }
 
-export async function triggerManualDiscovery(minScore = 4): Promise<{
+export async function triggerManualDiscovery(_minScore = 4): Promise<{
   proposals: number
   scanned: number
   tested: number
@@ -163,29 +161,27 @@ export async function triggerManualDiscovery(minScore = 4): Promise<{
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return redirect('/login')
 
-  // Get active sessions for this user
-  const { data: sessions } = await supabase
-    .from('paper_sessions')
-    .select('symbol, timeframe')
-    .eq('user_id', user.id)
-    .eq('status', 'active')
+  // Delegate to the API route which has maxDuration=300 and scans ALL TRADING_PAIRS
+  const baseUrl = 'http://localhost:3000'
 
-  if (!sessions || sessions.length === 0) {
-    return { proposals: 0, scanned: 0, tested: 0, errors: ['No active paper trading sessions'] }
+  const cronSecret = process.env.CRON_SECRET
+  if (!cronSecret) {
+    return { proposals: 0, scanned: 0, tested: 0, errors: ['CRON_SECRET not configured'] }
   }
 
-  const symbols = [...new Set(sessions.map(s => s.symbol))]
-  const timeframes = [...new Set(sessions.map(s => s.timeframe))] as Timeframe[]
-
-  const result = await runDiscoveryLoop({
-    symbols,
-    timeframes,
-    userId: user.id,
-    hypothesesPerMarket: 3,
-    minScore,
-    monthsBack: 6,
-    trigger: 'manual',
+  const res = await fetch(`${baseUrl}/api/cron/discover?secret=${cronSecret}`, {
+    method: 'GET',
+    signal: AbortSignal.timeout(290_000), // 290s timeout (under maxDuration=300)
   })
+
+  if (!res.ok) {
+    const text = await res.text()
+    return { proposals: 0, scanned: 0, tested: 0, errors: [`Discovery API error: ${text}`] }
+  }
+
+  const result = await res.json() as {
+    proposals: number; scanned: number; tested: number; errors: string[]; deployed: number
+  }
 
   revalidatePath('/discoveries')
   return result
