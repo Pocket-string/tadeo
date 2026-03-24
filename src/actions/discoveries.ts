@@ -151,7 +151,7 @@ export async function getDiscoveryRuns(limit = 10): Promise<DiscoveryRun[]> {
   return (data ?? []) as DiscoveryRun[]
 }
 
-export async function triggerManualDiscovery(_minScore = 4): Promise<{
+export async function triggerManualDiscovery(minScore = 4): Promise<{
   proposals: number
   scanned: number
   tested: number
@@ -161,28 +161,20 @@ export async function triggerManualDiscovery(_minScore = 4): Promise<{
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return redirect('/login')
 
-  // Delegate to the API route which has maxDuration=300 and scans ALL TRADING_PAIRS
-  const baseUrl = 'http://localhost:3000'
+  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
 
   const cronSecret = process.env.CRON_SECRET
   if (!cronSecret) {
     return { proposals: 0, scanned: 0, tested: 0, errors: ['CRON_SECRET not configured'] }
   }
 
-  const res = await fetch(`${baseUrl}/api/cron/discover?secret=${cronSecret}`, {
+  // Fire-and-forget: trigger discovery without awaiting (avoids Traefik 60s timeout)
+  // Results are tracked in discovery_runs table and will appear on page refresh
+  fetch(`${baseUrl}/api/cron/discover?secret=${cronSecret}&minScore=${minScore}&trigger=manual`, {
     method: 'GET',
-    signal: AbortSignal.timeout(290_000), // 290s timeout (under maxDuration=300)
-  })
-
-  if (!res.ok) {
-    const text = await res.text()
-    return { proposals: 0, scanned: 0, tested: 0, errors: [`Discovery API error: ${text}`] }
-  }
-
-  const result = await res.json() as {
-    proposals: number; scanned: number; tested: number; errors: string[]; deployed: number
-  }
+    signal: AbortSignal.timeout(290_000),
+  }).catch(() => {})
 
   revalidatePath('/discoveries')
-  return result
+  return { proposals: -1, scanned: 0, tested: 0, errors: [] }
 }

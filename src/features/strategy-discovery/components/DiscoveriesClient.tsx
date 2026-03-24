@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState, useTransition, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { triggerManualDiscovery } from '@/actions/discoveries'
 import { ProposalList } from './ProposalList'
 import type { ProposalRecord } from '../types'
@@ -21,10 +22,19 @@ interface Props {
 }
 
 export function DiscoveriesClient({ proposals, runs }: Props) {
+  const router = useRouter()
   const [tab, setTab] = useState<Tab>('pending')
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>('balanced')
   const [isRunning, startTransition] = useTransition()
   const [runResult, setRunResult] = useState<string | null>(null)
+
+  const scheduleRefreshes = useCallback(() => {
+    // Auto-refresh at 30s, 2min, and 5min to catch discovery results
+    const timers = [30_000, 120_000, 300_000].map(ms =>
+      setTimeout(() => router.refresh(), ms)
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [router])
 
   const pending = proposals.filter(p => p.status === 'pending')
   const deployed = proposals.filter(p => p.status === 'deployed')
@@ -49,7 +59,11 @@ export function DiscoveriesClient({ proposals, runs }: Props) {
     startTransition(async () => {
       try {
         const result = await triggerManualDiscovery(QUALITY_PRESETS[qualityPreset].minScore)
-        if (result.proposals > 0) {
+        if (result.proposals === -1) {
+          // Fire-and-forget: discovery running in background
+          setRunResult('Discovery iniciado en segundo plano. Los resultados apareceran en unos minutos.')
+          scheduleRefreshes()
+        } else if (result.proposals > 0) {
           setRunResult(`${result.proposals} propuestas encontradas de ${result.tested} hipotesis probadas`)
         } else {
           const reason = result.errors.length > 0
@@ -140,8 +154,10 @@ export function DiscoveriesClient({ proposals, runs }: Props) {
 
           {runResult && (
             <p className={`text-sm mt-3 pt-3 border-t border-border ${
-              runResult.startsWith('Error') || runResult.startsWith('Sin')
-                ? 'text-warning-500' : 'text-success-500'
+              runResult.startsWith('Error') ? 'text-error-500'
+                : runResult.startsWith('Sin') ? 'text-warning-500'
+                : runResult.startsWith('Discovery iniciado') ? 'text-primary-500'
+                : 'text-success-500'
             }`}>
               {runResult}
             </p>

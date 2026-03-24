@@ -39,6 +39,10 @@ export async function GET(req: NextRequest) {
     timeframe: PAIR_CONFIG[s].defaultTimeframe as Timeframe,
   }))
 
+  // Accept optional overrides from query params (manual trigger passes these)
+  const minScore = Number(req.nextUrl.searchParams.get('minScore')) || 3
+  const trigger = req.nextUrl.searchParams.get('trigger') || 'cron'
+
   // Run discovery for ALL 10 pairs
   const result = await runDiscoveryLoop({
     symbols,
@@ -46,9 +50,9 @@ export async function GET(req: NextRequest) {
     symbolTimeframePairs,
     userId,
     hypothesesPerMarket: 3,
-    minScore: 3,
+    minScore,
     monthsBack: 6,
-    trigger: 'cron',
+    trigger,
   })
 
   // Auto-deploy: for pairs without active sessions, deploy best pending proposal
