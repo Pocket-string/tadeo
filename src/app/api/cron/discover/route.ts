@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
     symbolTimeframePairs,
     userId,
     hypothesesPerMarket: 3,
-    minScore: 5,
+    minScore: 3,
     monthsBack: 6,
     trigger: 'cron',
   })

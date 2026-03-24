@@ -410,7 +410,7 @@ function mutateParams(base: StrategyParameters): StrategyParameters {
 
 export async function scoreResult(r: SimResult): Promise<number> {
   const m = r.metrics
-  if (m.totalTrades < 15) return -100 // Need statistical significance
+  if (m.totalTrades < 10) return -100 // Need statistical significance
 
   let score = 0
 

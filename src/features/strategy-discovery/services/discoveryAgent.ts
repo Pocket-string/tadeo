@@ -230,11 +230,11 @@ async function backtestAndOptimize(
   }
 
   // Minimum quality gate on training set
-  if (bestResult.metrics.totalTrades < 15 || bestScore < 0) return null
+  if (bestResult.metrics.totalTrades < 10 || bestScore < 0) return null
 
   // Walk-Forward Validation: run best params on UNSEEN validation data
   const validation = await simulateOnCandles(validCandles, bestParams, capital, symbol, timeframe, 0.02)
-  if (validation.metrics.totalTrades < 5 || validation.metrics.winRate < 0.40 || validation.metrics.netPnlPct < 0) {
+  if (validation.metrics.totalTrades < 3 || validation.metrics.winRate < 0.35 || validation.metrics.netPnlPct < 0) {
     return null // Failed out-of-sample validation — likely overfitted
   }
 
