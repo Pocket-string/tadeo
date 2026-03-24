@@ -106,7 +106,7 @@ export async function approveProposal(proposalId: string): Promise<{ strategyId:
   if (sessErr || !session) throw new Error(`Failed to start session: ${sessErr?.message}`)
 
   // Update proposal status
-  await supabase
+  const { error: updateErr } = await supabase
     .from('strategy_proposals')
     .update({
       status: 'deployed',
@@ -114,6 +114,8 @@ export async function approveProposal(proposalId: string): Promise<{ strategyId:
       deployed_session_id: session.id,
     })
     .eq('id', proposalId)
+
+  if (updateErr) throw new Error(`Failed to update proposal: ${updateErr.message}`)
 
   revalidatePath('/discoveries')
   revalidatePath('/paper-trading')
