@@ -125,7 +125,12 @@ export async function runDiscoveryLoop(config: DiscoveryConfig & { trigger?: str
               timeframe
             )
 
-            if (!result || result.score < minScore) {
+            if (!result) {
+              proposalsRejected++
+              continue
+            }
+            if (result.score < minScore) {
+              console.log(`[discovery] ${symbol}/${timeframe} REJECTED: score too low (${result.score.toFixed(1)} < ${minScore})`)
               proposalsRejected++
               continue
             }
@@ -196,7 +201,10 @@ async function backtestAndOptimize(
   const trainCandles = candles.slice(0, splitIdx)
   const validCandles = candles.slice(splitIdx)
 
-  if (trainCandles.length < 50 || validCandles.length < 20) return null
+  if (trainCandles.length < 50 || validCandles.length < 20) {
+    console.log(`[discovery] ${symbol}/${timeframe} REJECTED: insufficient split data (train=${trainCandles.length}, valid=${validCandles.length})`)
+    return null
+  }
 
   // Initial backtest on TRAINING set only
   const baseResult = await simulateOnCandles(
@@ -229,12 +237,17 @@ async function backtestAndOptimize(
     }
   }
 
-  // Minimum quality gate on training set
-  if (bestResult.metrics.totalTrades < 10 || bestScore < 0) return null
+  // Minimum quality gate on training set (raised from 10 → 20 trades, 2026-03-24 anti-overfit)
+  if (bestResult.metrics.totalTrades < 20 || bestScore < 0) {
+    console.log(`[discovery] ${symbol}/${timeframe} REJECTED: training quality (trades=${bestResult.metrics.totalTrades}, score=${bestScore.toFixed(1)})`)
+    return null
+  }
 
   // Walk-Forward Validation: run best params on UNSEEN validation data
+  // Raised from 3 → 8 min trades (2026-03-24 — 3 trades was statistically meaningless)
   const validation = await simulateOnCandles(validCandles, bestParams, capital, symbol, timeframe, 0.02)
-  if (validation.metrics.totalTrades < 3 || validation.metrics.winRate < 0.35 || validation.metrics.netPnlPct < 0) {
+  if (validation.metrics.totalTrades < 8 || validation.metrics.winRate < 0.35 || validation.metrics.netPnlPct < 0) {
+    console.log(`[discovery] ${symbol}/${timeframe} REJECTED: walk-forward validation (trades=${validation.metrics.totalTrades}, WR=${(validation.metrics.winRate * 100).toFixed(1)}%, PnL=${(validation.metrics.netPnlPct * 100).toFixed(1)}%)`)
     return null // Failed out-of-sample validation — likely overfitted
   }
 

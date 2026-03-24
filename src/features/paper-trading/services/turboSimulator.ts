@@ -247,6 +247,7 @@ export async function simulateOnCandles(
       const ctx = buildContext(candles, i, params, indicators, prevEF, prevES)
 
       if (ctx) {
+        ctx.timeframe = timeframe
         // Regime filtering — skip choppy and volatile markets
         const adxVal = ctx.adx?.adx ?? 0
         const isChoppy = adxVal < 20 && adxVal > 0

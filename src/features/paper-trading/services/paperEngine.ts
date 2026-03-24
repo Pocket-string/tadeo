@@ -363,6 +363,7 @@ async function checkSignalFull(
   // Build signal context for the latest candle
   const ctx = buildContext(candles, lastIndex, params, indicators, prevEF, prevES)
   if (!ctx) return null
+  ctx.timeframe = timeframe
 
   // Regime filtering — skip choppy and volatile markets
   // ADX threshold is timeframe-aware: 4h/1d markets trend slowly so a lower bar applies

@@ -44,6 +44,7 @@ export interface SignalContext {
   candles: OHLCVCandle[]
   params: StrategyParameters
   currentIndex: number // index of current candle being evaluated
+  timeframe?: string // optional — used by signals that behave differently per timeframe
   // Pre-computed indicators (latest values)
   emaFast: number
   emaSlow: number
@@ -193,6 +194,24 @@ const adxTrendSystem: SignalSystem = {
 
     const adxStrength = Math.min(1, (ctx.adx.adx - 30) / 30)
 
+    // Momentum guard: don't enter if price already moved > 1 ATR in that direction recently
+    // This prevents entering late into moves that are about to reverse
+    const lookback = Math.min(5, ctx.currentIndex)
+    if (lookback > 0 && ctx.atr > 0) {
+      const recentHigh = Math.max(...ctx.candles.slice(ctx.currentIndex - lookback, ctx.currentIndex + 1).map(c => c.high))
+      const recentLow = Math.min(...ctx.candles.slice(ctx.currentIndex - lookback, ctx.currentIndex + 1).map(c => c.low))
+      const recentRange = recentHigh - recentLow
+
+      // Long: skip if price already rallied > 1 ATR (late entry)
+      if (ctx.adx.plusDI > ctx.adx.minusDI && (ctx.price - recentLow) > ctx.atr * 1.0) {
+        return { signal: 'neutral', confidence: 0, metadata: { skipped: 'late_long_entry' } }
+      }
+      // Short: skip if price already dropped > 1 ATR (late entry — root cause of 7.1% WR)
+      if (ctx.adx.minusDI > ctx.adx.plusDI && (recentHigh - ctx.price) > ctx.atr * 1.0) {
+        return { signal: 'neutral', confidence: 0, metadata: { skipped: 'late_short_entry', range: recentRange, atr: ctx.atr } }
+      }
+    }
+
     if (ctx.adx.plusDI > ctx.adx.minusDI && ctx.rsi > 40 && ctx.rsi < 65 && ctx.emaFast > ctx.emaSlow) {
       return { signal: 'long', confidence: 0.5 + adxStrength * 0.3, metadata: { adx: ctx.adx.adx, trend: 'up' } }
     }
@@ -208,11 +227,31 @@ const doublePatternSystem: SignalSystem = {
   id: 'double-pattern',
   name: 'Double Top/Bottom',
   generate(ctx: SignalContext): SignalOutput {
-    const lookback = Math.min(60, ctx.currentIndex + 1)
+    // Increased lookback from 60 to 120 candles (2026-03-24 — 60 candles on 5m = only 5 hours, too noisy)
+    const lookback = Math.min(120, ctx.currentIndex + 1)
     const slice = ctx.candles.slice(ctx.currentIndex - lookback + 1, ctx.currentIndex + 1)
     const result = detectDoubleTopBottom(slice, lookback)
 
     if (!result.detected) return { signal: 'neutral', confidence: 0, metadata: {} }
+
+    // Confirmation filter: require price to move in pattern direction for 2+ candles after detection
+    // Without this, we enter immediately on pattern detection and get stopped out by false breakouts
+    if (ctx.currentIndex >= 2) {
+      const prev1 = ctx.candles[ctx.currentIndex - 1]
+      const prev2 = ctx.candles[ctx.currentIndex - 2]
+      if (result.type === 'bearish') {
+        // For short (double top): require 2 consecutive lower closes as confirmation
+        if (!(ctx.price < prev1.close && prev1.close < prev2.close)) {
+          return { signal: 'neutral', confidence: 0, metadata: { skipped: 'no_short_confirmation' } }
+        }
+      } else {
+        // For long (double bottom): require 2 consecutive higher closes as confirmation
+        if (!(ctx.price > prev1.close && prev1.close > prev2.close)) {
+          return { signal: 'neutral', confidence: 0, metadata: { skipped: 'no_long_confirmation' } }
+        }
+      }
+    }
+
     return {
       signal: result.type === 'bullish' ? 'long' : 'short',
       confidence: result.confidence,
@@ -220,6 +259,9 @@ const doublePatternSystem: SignalSystem = {
     }
   },
 }
+
+/** Short timeframes where RSI divergence long signals are unreliable (2026-03-24: WR 25.8% on 5m/15m) */
+const SHORT_TIMEFRAMES = new Set(['1m', '3m', '5m', '15m', '30m'])
 
 /** System 5: RSI Divergence */
 const rsiDivergenceSystem: SignalSystem = {
@@ -237,6 +279,12 @@ const rsiDivergenceSystem: SignalSystem = {
     const result = detectRSIDivergence(candleSlice, rsiSlice, lookback)
 
     if (!result.detected) return { signal: 'neutral', confidence: 0, metadata: {} }
+
+    // Disable bullish (long) RSI divergence on short timeframes — produces noise, WR 25.8% on 5m/15m
+    if (result.type === 'bullish' && ctx.timeframe && SHORT_TIMEFRAMES.has(ctx.timeframe)) {
+      return { signal: 'neutral', confidence: 0, metadata: { skipped: 'rsi_div_long_disabled_short_tf' } }
+    }
+
     return {
       signal: result.type === 'bullish' ? 'long' : 'short',
       confidence: result.confidence,
@@ -312,49 +360,49 @@ export const LEGACY_SIGNAL_CONFIG: SignalSystemConfig[] = [
   { id: 'engulfing-sr', weight: 0, enabled: false },
 ]
 
-/** Full config: all 7 systems with tuned weights */
+/** Full config: all 7 systems with tuned weights (rebalanced 2026-03-24 based on 234 live trades) */
 export const FULL_SIGNAL_CONFIG: SignalSystemConfig[] = [
-  { id: 'ema-cross', weight: 1.0, enabled: true },
-  { id: 'bb-mean-rev', weight: 0.8, enabled: true },
-  { id: 'adx-trend', weight: 0.9, enabled: true },
-  { id: 'double-pattern', weight: 1.2, enabled: true },
-  { id: 'rsi-divergence', weight: 1.1, enabled: true },
-  { id: 'volume-confirm', weight: 0.6, enabled: true },
+  { id: 'ema-cross', weight: 1.2, enabled: true },      // ema-cross:long WR 87.5%
+  { id: 'bb-mean-rev', weight: 1.5, enabled: true },     // bb-mean-rev:long 13W/0L — best signal
+  { id: 'adx-trend', weight: 0.5, enabled: true },       // adx-trend:short WR 7.1% — toxic, reduced
+  { id: 'double-pattern', weight: 0.5, enabled: true },  // double-pattern:short WR 33% — toxic, reduced
+  { id: 'rsi-divergence', weight: 0.4, enabled: true },  // rsi-divergence:long WR 25.8% — toxic, reduced
+  { id: 'volume-confirm', weight: 0.8, enabled: true },
   { id: 'engulfing-sr', weight: 1.0, enabled: true },
 ]
 
 // ─── Strategy Presets (New Composite Strategies) ────────────────────────────
 
-/** Pattern Confluence: pure price-action, no trend indicators. All regimes. */
+/** Pattern Confluence: price-action with volume/engulfing emphasis. Rebalanced — reduced toxic signals. */
 export const PATTERN_CONFLUENCE_CONFIG: SignalSystemConfig[] = [
   { id: 'ema-cross', weight: 0.2, enabled: false },
   { id: 'bb-mean-rev', weight: 0.3, enabled: false },
   { id: 'adx-trend', weight: 0.2, enabled: false },
-  { id: 'double-pattern', weight: 1.5, enabled: true },
-  { id: 'rsi-divergence', weight: 1.3, enabled: true },
-  { id: 'volume-confirm', weight: 0.8, enabled: true },
-  { id: 'engulfing-sr', weight: 1.2, enabled: true },
+  { id: 'double-pattern', weight: 0.8, enabled: true },  // reduced from 1.5 — short side toxic
+  { id: 'rsi-divergence', weight: 0.5, enabled: true },  // reduced from 1.3 — long side toxic in short TFs
+  { id: 'volume-confirm', weight: 1.2, enabled: true },  // raised — good confirmation signal
+  { id: 'engulfing-sr', weight: 1.5, enabled: true },    // raised — engulfing:long WR 100%
 ]
 
-/** Trend + Momentum: enter on trend confirmed by volume + momentum. */
+/** Trend + Momentum: enter on trend confirmed by volume + momentum. Rebalanced — ema-cross leads. */
 export const TREND_MOMENTUM_CONFIG: SignalSystemConfig[] = [
-  { id: 'ema-cross', weight: 1.0, enabled: true },
+  { id: 'ema-cross', weight: 1.3, enabled: true },       // raised — ema-cross:long WR 87.5%
   { id: 'bb-mean-rev', weight: 0.3, enabled: false },
-  { id: 'adx-trend', weight: 1.2, enabled: true },
+  { id: 'adx-trend', weight: 0.6, enabled: true },       // reduced from 1.2 — short side toxic
   { id: 'double-pattern', weight: 0.3, enabled: false },
-  { id: 'rsi-divergence', weight: 0.7, enabled: true },
+  { id: 'rsi-divergence', weight: 0.4, enabled: true },  // reduced from 0.7 — long side toxic
   { id: 'volume-confirm', weight: 1.0, enabled: true },
   { id: 'engulfing-sr', weight: 0.3, enabled: false },
 ]
 
-/** Mean Reversion Sniper: BB extremes + S/R + patterns. Very selective. */
+/** Mean Reversion Sniper: BB extremes + S/R + engulfing. Rebalanced — bb-mean-rev dominates. */
 export const MEAN_REVERSION_CONFIG: SignalSystemConfig[] = [
   { id: 'ema-cross', weight: 0.2, enabled: false },
-  { id: 'bb-mean-rev', weight: 1.5, enabled: true },
+  { id: 'bb-mean-rev', weight: 1.5, enabled: true },     // star signal — keep high
   { id: 'adx-trend', weight: 0.2, enabled: false },
   { id: 'double-pattern', weight: 0.5, enabled: false },
-  { id: 'rsi-divergence', weight: 1.0, enabled: true },
-  { id: 'volume-confirm', weight: 0.6, enabled: true },
+  { id: 'rsi-divergence', weight: 0.5, enabled: true },  // reduced from 1.0 — long side toxic
+  { id: 'volume-confirm', weight: 0.8, enabled: true },  // raised for confirmation
   { id: 'engulfing-sr', weight: 1.3, enabled: true },
 ]
 
@@ -369,16 +417,16 @@ export const STRATEGY_PRESETS = {
 
 // ─── Regime-Adaptive Composite ──────────────────────────────────────────────
 
-/** Trending regime weights */
+/** Trending regime weights (rebalanced 2026-03-24 — reduced toxic signals) */
 const TRENDING_WEIGHTS: Record<string, number> = {
-  'ema-cross': 1.5, 'bb-mean-rev': 0.3, 'adx-trend': 1.5,
-  'double-pattern': 0.5, 'rsi-divergence': 0.7, 'volume-confirm': 0.8, 'engulfing-sr': 0.4,
+  'ema-cross': 1.5, 'bb-mean-rev': 0.5, 'adx-trend': 0.7,
+  'double-pattern': 0.4, 'rsi-divergence': 0.4, 'volume-confirm': 0.8, 'engulfing-sr': 0.6,
 }
 
-/** Ranging regime weights */
+/** Ranging regime weights (rebalanced 2026-03-24 — bb-mean-rev dominates) */
 const RANGING_WEIGHTS: Record<string, number> = {
-  'ema-cross': 0.2, 'bb-mean-rev': 1.5, 'adx-trend': 0.2,
-  'double-pattern': 0.8, 'rsi-divergence': 1.2, 'volume-confirm': 0.6, 'engulfing-sr': 1.0,
+  'ema-cross': 0.3, 'bb-mean-rev': 1.5, 'adx-trend': 0.2,
+  'double-pattern': 0.5, 'rsi-divergence': 0.5, 'volume-confirm': 0.8, 'engulfing-sr': 1.2,
 }
 
 /**

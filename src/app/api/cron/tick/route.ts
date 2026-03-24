@@ -25,10 +25,23 @@ export async function GET(req: NextRequest) {
   const paperData = paperResult.status === 'fulfilled' ? await paperResult.value.json() : { error: paperResult.reason?.message }
   const liveData = liveResult.status === 'fulfilled' ? await liveResult.value.json() : { error: liveResult.reason?.message }
 
+  // Run session evaluation every 6 hours (at minute 0 of hours 0, 6, 12, 18)
+  let evalData: unknown = null
+  const now = new Date()
+  if (now.getUTCMinutes() === 0 && now.getUTCHours() % 6 === 0) {
+    try {
+      const evalResult = await fetch(`${baseUrl}/api/cron/evaluate`, { method: 'POST', headers })
+      evalData = evalResult.ok ? await evalResult.json() : { error: `evaluate ${evalResult.status}` }
+    } catch (err) {
+      evalData = { error: err instanceof Error ? err.message : 'evaluate failed' }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     timestamp: new Date().toISOString(),
     paper: paperData,
     live: liveData,
+    ...(evalData ? { evaluate: evalData } : {}),
   })
 }
