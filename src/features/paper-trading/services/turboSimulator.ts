@@ -158,6 +158,7 @@ export async function simulateOnCandles(
     trailingStop: number | null
     entryIndex: number
     breakevenHit: boolean
+    entryATR: number
   } | null = null
 
   let prevEF: number | null = null
@@ -180,11 +181,12 @@ export async function simulateOnCandles(
       continue
     }
 
-    // Breakeven: move SL to entry once price advances 0.5x ATR
+    // Breakeven: move SL to entry once price advances 0.5x entry ATR
     if (position && !position.breakevenHit && currentATR) {
+      const beATR = position.entryATR
       const beActivation = position.type === 'buy'
-        ? position.entryPrice + currentATR * 0.5
-        : position.entryPrice - currentATR * 0.5
+        ? position.entryPrice + beATR * 0.5
+        : position.entryPrice - beATR * 0.5
       if ((position.type === 'buy' && candle.high >= beActivation) ||
           (position.type === 'sell' && candle.low <= beActivation)) {
         position.stopLoss = position.type === 'buy'
@@ -322,6 +324,7 @@ export async function simulateOnCandles(
                 trailingStop: sl,
                 entryIndex: i,
                 breakevenHit: false,
+                entryATR: currentATR,
               }
             }
           }

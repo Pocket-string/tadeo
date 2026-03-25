@@ -262,11 +262,25 @@ export async function POST(req: NextRequest) {
         // Breakeven: move SL to entry once price advances 0.5x ATR
         const cacheKey = `${session.symbol}:${session.timeframe}`
         const currentATR = await getCachedATR(cacheKey, session.symbol, session.timeframe as Timeframe, supabase)
+        // Use entry_atr for activation thresholds — avoids mismatch when ATR changes between ticks
+        // For legacy trades without entry_atr, estimate from SL distance (SL = entry ± slMult*ATR)
+        let entryATR = Number(trade.metadata?.entry_atr) || null
+        if (!entryATR && currentATR) {
+          const slDist = Math.abs(Number(trade.entry_price) - Number(trade.stop_loss))
+          const slMult = params.stop_loss_pct > 1 ? params.stop_loss_pct : 1.5
+          entryATR = slDist / slMult
+          // Backfill entry_atr for future ticks
+          await supabase.from('paper_trades').update({
+            metadata: { ...trade.metadata, entry_atr: entryATR },
+          }).eq('id', trade.id)
+        }
+        // effectiveATR: entryATR when available, fallback to currentATR (guaranteed non-null inside guarded blocks)
+        const effectiveATR = entryATR ?? currentATR ?? 0
         if (currentATR && !trade.metadata?.breakeven_hit) {
           const entryPrice = Number(trade.entry_price)
           const beActivation = trade.type === 'buy'
-            ? entryPrice + currentATR * 0.5
-            : entryPrice - currentATR * 0.5
+            ? entryPrice + effectiveATR * 0.5
+            : entryPrice - effectiveATR * 0.5
           const shouldActivateBE = trade.type === 'buy'
             ? price >= beActivation
             : price <= beActivation
@@ -318,11 +332,12 @@ export async function POST(req: NextRequest) {
               }
             }
           } else {
-            // Default ATR-based trailing
+            // Default ATR-based trailing — use effectiveATR for activation, currentATR for distance
             const entryPrice = Number(trade.entry_price)
+            const activationATR = effectiveATR || currentATR
             const trailActivation = trade.type === 'buy'
-              ? entryPrice + currentATR
-              : entryPrice - currentATR
+              ? entryPrice + activationATR
+              : entryPrice - activationATR
 
             if (trade.type === 'buy' && price > trailActivation) {
               const newTrailSL = price - currentATR
@@ -366,8 +381,8 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      // No open position — check for signal (cached per symbol+timeframe)
-      const sigKey = `${session.symbol}:${session.timeframe}`
+      // No open position — check for signal (cached per symbol+timeframe+strategy to avoid cross-contamination)
+      const sigKey = `${session.symbol}:${session.timeframe}:${session.strategy_id}`
       if (!signalCache.has(sigKey)) {
         signalCache.set(sigKey, await checkSignalFull(session.symbol, session.timeframe as Timeframe, params, supabase))
       }
@@ -435,7 +450,7 @@ export async function POST(req: NextRequest) {
           quantity,
           stop_loss: stopLoss,
           take_profit: takeProfit,
-          metadata: { active_systems: signalSystems ?? [], slippage: SLIPPAGE_ENTRY },
+          metadata: { active_systems: signalSystems ?? [], slippage: SLIPPAGE_ENTRY, entry_atr: currentATR },
         })
         .select('id')
 

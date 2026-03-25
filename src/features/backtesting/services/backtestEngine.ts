@@ -20,6 +20,7 @@ interface OpenPosition {
   trailingActivation: number // price level where trailing activates
   trailingStop: number | null // dynamic trailing stop level
   breakevenHit: boolean
+  entryATR: number
 }
 
 /**
@@ -70,11 +71,12 @@ export function runBacktest(
     const prevEF = indicators.emaFastMap.get(prevTs)
     const prevES = indicators.emaSlowMap.get(prevTs)
 
-    // Breakeven: move SL to entry once price advances 0.5x ATR
+    // Breakeven: move SL to entry once price advances 0.5x entry ATR
     if (position && !position.breakevenHit && currentATR) {
+      const beATR = position.entryATR
       const beActivation = position.type === 'buy'
-        ? position.entryPrice + currentATR * 0.5
-        : position.entryPrice - currentATR * 0.5
+        ? position.entryPrice + beATR * 0.5
+        : position.entryPrice - beATR * 0.5
       if ((position.type === 'buy' && candle.high >= beActivation) ||
           (position.type === 'sell' && candle.low <= beActivation)) {
         position.stopLoss = position.type === 'buy'
@@ -196,6 +198,7 @@ export function runBacktest(
               trailingActivation,
               trailingStop: stopLoss,
               breakevenHit: false,
+              entryATR: currentATR,
             }
           }
         }

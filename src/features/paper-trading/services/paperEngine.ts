@@ -145,11 +145,14 @@ export async function tickPaperSession(sessionId: string): Promise<{
 
     // Breakeven: move SL to entry once price advances 0.5x ATR
     const currentATR = await getCurrentATR(session.symbol, session.timeframe as Timeframe)
+    // Use entry_atr for activation thresholds — avoids mismatch when ATR changes between ticks
+    const entryATR = Number(trade.metadata?.entry_atr) || currentATR
     if (currentATR && !trade.metadata?.breakeven_hit) {
       const entryPrice = Number(trade.entry_price)
+      const effectiveATR = entryATR ?? currentATR
       const beActivation = trade.type === 'buy'
-        ? entryPrice + currentATR * 0.5
-        : entryPrice - currentATR * 0.5
+        ? entryPrice + effectiveATR * 0.5
+        : entryPrice - effectiveATR * 0.5
       const shouldActivateBE = trade.type === 'buy'
         ? price >= beActivation
         : price <= beActivation
@@ -182,11 +185,12 @@ export async function tickPaperSession(sessionId: string): Promise<{
           }
         }
       } else {
-        // Default ATR-based trailing
+        // Default ATR-based trailing — use entryATR for activation, currentATR for distance
         const entryPrice = Number(trade.entry_price)
+        const activationATR = entryATR ?? currentATR ?? 0
         const trailActivation = trade.type === 'buy'
-          ? entryPrice + currentATR
-          : entryPrice - currentATR
+          ? entryPrice + activationATR
+          : entryPrice - activationATR
 
         if (trade.type === 'buy' && price > trailActivation) {
           const newTrailSL = price - currentATR
@@ -268,7 +272,7 @@ export async function tickPaperSession(sessionId: string): Promise<{
       quantity,
       stop_loss: stopLoss,
       take_profit: takeProfit,
-      metadata: { active_systems: signalSystems ?? [] },
+      metadata: { active_systems: signalSystems ?? [], entry_atr: currentATR },
     })
     .select()
 
