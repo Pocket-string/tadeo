@@ -19,6 +19,7 @@ interface OpenPosition {
   takeProfit: number
   trailingActivation: number // price level where trailing activates
   trailingStop: number | null // dynamic trailing stop level
+  breakevenHit: boolean
 }
 
 /**
@@ -42,6 +43,11 @@ export function runBacktest(
   // Detect market regime
   const regime = detectRegime(candles, adx, atr, emaFast, emaSlow)
 
+  // Pre-compute EMA for trailing stop if mode is 'ema'
+  const trailingEmaMap = params.trailing_stop_mode === 'ema'
+    ? new Map(calculateEMA(candles, params.trailing_ema_period ?? 20).map(e => [e.timestamp, e.value]))
+    : null
+
   // Maps for quick lookup
   const atrMap = new Map(atr.map(e => [e.timestamp, e.value]))
 
@@ -64,22 +70,51 @@ export function runBacktest(
     const prevEF = indicators.emaFastMap.get(prevTs)
     const prevES = indicators.emaSlowMap.get(prevTs)
 
+    // Breakeven: move SL to entry once price advances 0.5x ATR
+    if (position && !position.breakevenHit && currentATR) {
+      const beActivation = position.type === 'buy'
+        ? position.entryPrice + currentATR * 0.5
+        : position.entryPrice - currentATR * 0.5
+      if ((position.type === 'buy' && candle.high >= beActivation) ||
+          (position.type === 'sell' && candle.low <= beActivation)) {
+        position.stopLoss = position.type === 'buy'
+          ? Math.max(position.stopLoss, position.entryPrice)
+          : Math.min(position.stopLoss, position.entryPrice)
+        position.breakevenHit = true
+      }
+    }
+
     // Update trailing stop if position open
     if (position && position.trailingStop !== null) {
-      if (position.type === 'buy' && candle.high > position.trailingActivation) {
-        const newTrail = candle.high - (currentATR ?? (position.entryPrice * params.stop_loss_pct))
-        if (newTrail > position.trailingStop) {
-          position.trailingStop = newTrail
-          if (position.trailingStop > position.stopLoss) {
-            position.stopLoss = position.trailingStop
+      if (params.trailing_stop_mode === 'ema' && trailingEmaMap) {
+        // EMA-based adaptive trailing: SL follows EMA ± 0.5*ATR buffer
+        const emaVal = trailingEmaMap.get(ts)
+        if (emaVal !== undefined && currentATR) {
+          if (position.type === 'buy') {
+            const emaSL = emaVal - currentATR * 0.5
+            if (emaSL > position.stopLoss) position.stopLoss = emaSL
+          } else {
+            const emaSL = emaVal + currentATR * 0.5
+            if (emaSL < position.stopLoss) position.stopLoss = emaSL
           }
         }
-      } else if (position.type === 'sell' && candle.low < position.trailingActivation) {
-        const newTrail = candle.low + (currentATR ?? (position.entryPrice * params.stop_loss_pct))
-        if (newTrail < position.trailingStop) {
-          position.trailingStop = newTrail
-          if (position.trailingStop < position.stopLoss) {
-            position.stopLoss = position.trailingStop
+      } else {
+        // Default ATR-based trailing
+        if (position.type === 'buy' && candle.high > position.trailingActivation) {
+          const newTrail = candle.high - (currentATR ?? (position.entryPrice * params.stop_loss_pct))
+          if (newTrail > position.trailingStop) {
+            position.trailingStop = newTrail
+            if (position.trailingStop > position.stopLoss) {
+              position.stopLoss = position.trailingStop
+            }
+          }
+        } else if (position.type === 'sell' && candle.low < position.trailingActivation) {
+          const newTrail = candle.low + (currentATR ?? (position.entryPrice * params.stop_loss_pct))
+          if (newTrail < position.trailingStop) {
+            position.trailingStop = newTrail
+            if (position.trailingStop < position.stopLoss) {
+              position.stopLoss = position.trailingStop
+            }
           }
         }
       }
@@ -160,6 +195,7 @@ export function runBacktest(
               takeProfit,
               trailingActivation,
               trailingStop: stopLoss,
+              breakevenHit: false,
             }
           }
         }
@@ -237,6 +273,7 @@ function calculateMetrics(
       netProfit: 0,
       maxDrawdown: 0,
       sharpeRatio: 0,
+      sortinoRatio: 0,
       tStatistic: 0,
       profitFactor: 0,
     }
@@ -265,6 +302,12 @@ function calculateMetrics(
   )
   const sharpeRatio = stdReturn === 0 ? 0 : (avgReturn / stdReturn) * Math.sqrt(252)
 
+  // Sortino ratio (penalizes only downside volatility)
+  const downsideDev = Math.sqrt(
+    returns.reduce((s, r) => s + Math.min(0, r) ** 2, 0) / returns.length
+  )
+  const sortinoRatio = downsideDev > 0 ? (avgReturn / downsideDev) * Math.sqrt(252) : 0
+
   // t-statistic = avgReturn / (stdReturn / sqrt(n))
   const tStatistic = stdReturn === 0 ? 0 : (avgReturn / (stdReturn / Math.sqrt(trades.length)))
 
@@ -276,6 +319,7 @@ function calculateMetrics(
     netProfit: totalPnl,
     maxDrawdown,
     sharpeRatio,
+    sortinoRatio,
     tStatistic,
     profitFactor: grossLoss === 0 ? grossProfit > 0 ? Infinity : 0 : grossProfit / grossLoss,
   }

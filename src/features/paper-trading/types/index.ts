@@ -70,6 +70,7 @@ export interface PaperTrade {
   entry_time: string
   exit_time: string | null
   exit_reason: string | null
+  metadata: Record<string, unknown> | null
   created_at: string
 }
 

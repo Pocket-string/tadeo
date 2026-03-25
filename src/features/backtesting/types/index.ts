@@ -33,6 +33,7 @@ export interface BacktestMetrics {
   netProfit: number
   maxDrawdown: number
   sharpeRatio: number
+  sortinoRatio: number
   tStatistic: number
   profitFactor: number
 }
@@ -59,6 +60,7 @@ export interface ScientificBacktestOutput {
 export interface MetricDegradation {
   winRate: number       // (IS - OOS) / IS as percentage
   sharpeRatio: number
+  sortinoRatio: number
   profitFactor: number
   overall: number       // average degradation
 }
@@ -67,6 +69,7 @@ export interface MetricSemaphore {
   tStatistic: 'green' | 'yellow' | 'red'
   winRate: 'green' | 'yellow' | 'red'
   sharpeRatio: 'green' | 'yellow' | 'red'
+  sortinoRatio: 'green' | 'yellow' | 'red'
   maxDrawdown: 'green' | 'yellow' | 'red'
   profitFactor: 'green' | 'yellow' | 'red'
   degradation: 'green' | 'yellow' | 'red'

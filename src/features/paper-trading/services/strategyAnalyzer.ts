@@ -12,6 +12,7 @@ export interface StrategyMetrics {
   winRate: number
   profitFactor: number
   sharpeRatio: number
+  sortinoRatio: number
   maxDrawdown: number
   calmarRatio: number
   consecutiveLosses: number
@@ -79,7 +80,7 @@ export async function analyzeStrategy(
 function computeMetrics(trades: PaperTrade[], initialCapital: number): StrategyMetrics {
   if (trades.length === 0) {
     return {
-      totalTrades: 0, winRate: 0, profitFactor: 0, sharpeRatio: 0,
+      totalTrades: 0, winRate: 0, profitFactor: 0, sharpeRatio: 0, sortinoRatio: 0,
       maxDrawdown: 0, calmarRatio: 0, consecutiveLosses: 0,
       avgWinLossRatio: 0, expectancy: 0, recoveryFactor: 0,
       netPnl: 0, netPnlPct: 0, daysActive: 0,
@@ -104,6 +105,12 @@ function computeMetrics(trades: PaperTrade[], initialCapital: number): StrategyM
     ? Math.sqrt(returns.reduce((s, r) => s + (r - avgReturn) ** 2, 0) / (returns.length - 1))
     : 0
   const sharpeRatio = stdReturn > 0 ? (avgReturn / stdReturn) * Math.sqrt(252) : 0
+
+  // Sortino ratio (penalizes only downside volatility)
+  const downsideDev = Math.sqrt(
+    returns.reduce((s, r) => s + Math.min(0, r) ** 2, 0) / returns.length
+  )
+  const sortinoRatio = downsideDev > 0 ? (avgReturn / downsideDev) * Math.sqrt(252) : 0
 
   // Max drawdown
   let peak = initialCapital
@@ -155,6 +162,7 @@ function computeMetrics(trades: PaperTrade[], initialCapital: number): StrategyM
     winRate,
     profitFactor,
     sharpeRatio,
+    sortinoRatio,
     maxDrawdown,
     calmarRatio,
     consecutiveLosses: maxConsecLosses,
@@ -173,11 +181,11 @@ export function gradeStrategy(m: StrategyMetrics): StrategyGrade {
   if (m.totalTrades < 5) return '-'
 
   // A: Elite
-  if (m.sharpeRatio > 1.5 && m.winRate > 0.55 && m.profitFactor > 2.0 && m.maxDrawdown < 0.10 && m.totalTrades >= 30) {
+  if (m.sharpeRatio > 1.5 && m.sortinoRatio > 2.0 && m.winRate > 0.55 && m.profitFactor > 2.0 && m.maxDrawdown < 0.10 && m.totalTrades >= 30) {
     return 'A'
   }
   // B: Strong
-  if (m.sharpeRatio > 1.0 && m.winRate > 0.50 && m.profitFactor > 1.5 && m.maxDrawdown < 0.15 && m.totalTrades >= 20) {
+  if (m.sharpeRatio > 1.0 && m.sortinoRatio > 1.2 && m.winRate > 0.50 && m.profitFactor > 1.5 && m.maxDrawdown < 0.15 && m.totalTrades >= 20) {
     return 'B'
   }
   // C: Acceptable
@@ -218,6 +226,9 @@ function assessStrengthsWeaknesses(m: StrategyMetrics): { strengths: string[]; w
 
   if (m.sharpeRatio > 1.5) strengths.push('Excelente retorno ajustado por riesgo')
   else if (m.sharpeRatio < 0.5 && m.totalTrades >= 10) weaknesses.push('Bajo retorno ajustado por riesgo')
+
+  if (m.sortinoRatio > 2.0) strengths.push('Excelente control de riesgo a la baja (Sortino alto)')
+  else if (m.sortinoRatio < 0.5 && m.totalTrades >= 10) weaknesses.push('Volatilidad a la baja preocupante')
 
   if (m.winRate > 0.55) strengths.push('Alta tasa de acierto')
   else if (m.winRate < 0.40) weaknesses.push('Baja tasa de acierto')

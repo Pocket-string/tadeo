@@ -71,6 +71,17 @@ function computeSharpe(trades: TradeRow[]) {
   return std > 0 ? (mean / std) * Math.sqrt(252) : 0
 }
 
+function computeSortino(trades: TradeRow[]) {
+  const closed = trades.filter(t => t.status === 'closed')
+  if (closed.length < 2) return 0
+  const returns = closed.map(t => t.pnl_pct)
+  const mean = returns.reduce((s, r) => s + r, 0) / returns.length
+  const downsideDev = Math.sqrt(
+    returns.reduce((s, r) => s + Math.min(0, r) ** 2, 0) / returns.length
+  )
+  return downsideDev > 0 ? (mean / downsideDev) * Math.sqrt(252) : 0
+}
+
 function computeMaxDrawdown(trades: TradeRow[], initialCapital: number) {
   const closed = trades.filter(t => t.status === 'closed')
   let peak = initialCapital
@@ -155,6 +166,7 @@ export async function GET(req: NextRequest) {
     const pnlPct = (netPnl / s.initial_capital) * 100
     const pf = computeProfitFactor(trades)
     const sharpe = computeSharpe(trades)
+    const sortino = computeSortino(trades)
     const maxDd = computeMaxDrawdown(trades, s.initial_capital)
     const daysActive = (Date.now() - new Date(s.created_at).getTime()) / (1000 * 60 * 60 * 24)
     const maturity = computeMaturityScore(closed.length, daysActive, pf, sharpe, wr)
@@ -178,6 +190,7 @@ export async function GET(req: NextRequest) {
       pnl_pct: Math.round(pnlPct * 100) / 100,
       profit_factor: Math.round(pf * 100) / 100,
       sharpe: Math.round(sharpe * 100) / 100,
+      sortino: Math.round(sortino * 100) / 100,
       max_drawdown: Math.round(maxDd * 10000) / 100,
       maturity,
       recent_trend: recentTrend,

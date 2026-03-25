@@ -116,6 +116,10 @@ export interface StrategyParameters {
   take_profit_pct: number // ATR multiplier, e.g. 2.5 (= 2.5x ATR distance)
   /** Optional N-Signal system configuration. If absent, legacy 3-system behavior is used. */
   signal_systems?: { id: string; weight: number; enabled: boolean }[]
+  /** Trailing stop mode: 'atr' (default) uses fixed ATR offset, 'ema' uses adaptive EMA-based trailing */
+  trailing_stop_mode?: 'atr' | 'ema'
+  /** EMA period for trailing stop when mode is 'ema' (default: 20) */
+  trailing_ema_period?: number
 }
 
 // ============================================

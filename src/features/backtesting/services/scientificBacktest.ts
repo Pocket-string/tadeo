@@ -109,36 +109,38 @@ function calculateDegradation(is: BacktestMetrics, oos: BacktestMetrics): Metric
 
   const winRate = degradePct(is.winRate, oos.winRate)
   const sharpeRatio = degradePct(is.sharpeRatio, oos.sharpeRatio)
+  const sortinoRatio = degradePct(is.sortinoRatio, oos.sortinoRatio)
   const profitFactor = degradePct(
     is.profitFactor === Infinity ? 10 : is.profitFactor,
     oos.profitFactor === Infinity ? 10 : oos.profitFactor
   )
-  const overall = (Math.abs(winRate) + Math.abs(sharpeRatio) + Math.abs(profitFactor)) / 3
+  const overall = (Math.abs(winRate) + Math.abs(sharpeRatio) + Math.abs(sortinoRatio) + Math.abs(profitFactor)) / 4
 
-  return { winRate, sharpeRatio, profitFactor, overall }
+  return { winRate, sharpeRatio, sortinoRatio, profitFactor, overall }
 }
 
 function calculateSemaphore(oos: BacktestMetrics, degradation: MetricDegradation): MetricSemaphore {
   const tStatistic = oos.tStatistic > 3.0 ? 'green' : oos.tStatistic > 2.0 ? 'yellow' : 'red'
   const winRate = oos.winRate > 0.55 ? 'green' : oos.winRate > 0.45 ? 'yellow' : 'red'
   const sharpeRatio = oos.sharpeRatio > 1.5 ? 'green' : oos.sharpeRatio > 1.0 ? 'yellow' : 'red'
+  const sortinoRatio = oos.sortinoRatio > 2.0 ? 'green' : oos.sortinoRatio > 1.0 ? 'yellow' : 'red'
   const maxDrawdown = oos.maxDrawdown < 0.15 ? 'green' : oos.maxDrawdown < 0.25 ? 'yellow' : 'red'
   const profitFactor = oos.profitFactor > 1.5 ? 'green' : oos.profitFactor > 1.0 ? 'yellow' : 'red'
   const deg = degradation.overall < 20 ? 'green' : degradation.overall < 40 ? 'yellow' : 'red'
 
   const scores = { green: 2, yellow: 1, red: 0 } as const
-  const values = [tStatistic, winRate, sharpeRatio, maxDrawdown, profitFactor, deg] as const
+  const values = [tStatistic, winRate, sharpeRatio, sortinoRatio, maxDrawdown, profitFactor, deg] as const
   const totalScore = values.reduce((sum, v) => sum + scores[v], 0)
-  const overall = totalScore >= 9 ? 'green' : totalScore >= 5 ? 'yellow' : 'red'
+  const overall = totalScore >= 10 ? 'green' : totalScore >= 6 ? 'yellow' : 'red'
 
-  return { tStatistic, winRate, sharpeRatio, maxDrawdown, profitFactor, degradation: deg, overall }
+  return { tStatistic, winRate, sharpeRatio, sortinoRatio, maxDrawdown, profitFactor, degradation: deg, overall }
 }
 
 function aggregateMetrics(metricsList: BacktestMetrics[]): BacktestMetrics {
   if (metricsList.length === 0) {
     return {
       totalTrades: 0, winningTrades: 0, losingTrades: 0, winRate: 0,
-      netProfit: 0, maxDrawdown: 0, sharpeRatio: 0, tStatistic: 0, profitFactor: 0,
+      netProfit: 0, maxDrawdown: 0, sharpeRatio: 0, sortinoRatio: 0, tStatistic: 0, profitFactor: 0,
     }
   }
 
@@ -152,6 +154,7 @@ function aggregateMetrics(metricsList: BacktestMetrics[]): BacktestMetrics {
     netProfit: metricsList.reduce((s, m) => s + m.netProfit, 0),
     maxDrawdown: Math.max(...metricsList.map((m) => m.maxDrawdown)),
     sharpeRatio: avg(metricsList.map((m) => m.sharpeRatio)),
+    sortinoRatio: avg(metricsList.map((m) => m.sortinoRatio)),
     tStatistic: avg(metricsList.map((m) => m.tStatistic)),
     profitFactor: avg(metricsList.map((m) => m.profitFactor === Infinity ? 10 : m.profitFactor)),
   }

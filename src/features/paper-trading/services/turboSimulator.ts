@@ -53,6 +53,7 @@ export interface SimResult {
     profitFactor: number
     maxDrawdown: number
     sharpeRatio: number
+    sortinoRatio: number
     avgTradeDuration: string
     tradesPerMonth: number
   }
@@ -141,6 +142,11 @@ export async function simulateOnCandles(
   let peakCapital = initialCapital
   let maxDrawdown = 0
 
+  // Pre-compute EMA for trailing stop if mode is 'ema'
+  const trailingEmaMap = params.trailing_stop_mode === 'ema'
+    ? new Map(calculateEMA(candles, params.trailing_ema_period ?? 20).map(e => [e.timestamp, e.value]))
+    : null
+
   let position: {
     type: 'buy' | 'sell'
     entryTime: string
@@ -151,6 +157,7 @@ export async function simulateOnCandles(
     trailingActivation: number
     trailingStop: number | null
     entryIndex: number
+    breakevenHit: boolean
   } | null = null
 
   let prevEF: number | null = null
@@ -173,19 +180,48 @@ export async function simulateOnCandles(
       continue
     }
 
+    // Breakeven: move SL to entry once price advances 0.5x ATR
+    if (position && !position.breakevenHit && currentATR) {
+      const beActivation = position.type === 'buy'
+        ? position.entryPrice + currentATR * 0.5
+        : position.entryPrice - currentATR * 0.5
+      if ((position.type === 'buy' && candle.high >= beActivation) ||
+          (position.type === 'sell' && candle.low <= beActivation)) {
+        position.stopLoss = position.type === 'buy'
+          ? Math.max(position.stopLoss, position.entryPrice)
+          : Math.min(position.stopLoss, position.entryPrice)
+        position.breakevenHit = true
+      }
+    }
+
     // Trailing stop update
     if (position && position.trailingStop !== null && currentATR) {
-      if (position.type === 'buy' && candle.high > position.trailingActivation) {
-        const newTrail = candle.high - currentATR
-        if (newTrail > position.trailingStop) {
-          position.trailingStop = newTrail
-          if (position.trailingStop > position.stopLoss) position.stopLoss = position.trailingStop
+      if (params.trailing_stop_mode === 'ema' && trailingEmaMap) {
+        // EMA-based adaptive trailing: SL follows EMA ± 0.5*ATR buffer
+        const emaVal = trailingEmaMap.get(ts)
+        if (emaVal !== undefined) {
+          if (position.type === 'buy') {
+            const emaSL = emaVal - currentATR * 0.5
+            if (emaSL > position.stopLoss) position.stopLoss = emaSL
+          } else {
+            const emaSL = emaVal + currentATR * 0.5
+            if (emaSL < position.stopLoss) position.stopLoss = emaSL
+          }
         }
-      } else if (position.type === 'sell' && candle.low < position.trailingActivation) {
-        const newTrail = candle.low + currentATR
-        if (newTrail < position.trailingStop) {
-          position.trailingStop = newTrail
-          if (position.trailingStop < position.stopLoss) position.stopLoss = position.trailingStop
+      } else {
+        // Default ATR-based trailing
+        if (position.type === 'buy' && candle.high > position.trailingActivation) {
+          const newTrail = candle.high - currentATR
+          if (newTrail > position.trailingStop) {
+            position.trailingStop = newTrail
+            if (position.trailingStop > position.stopLoss) position.stopLoss = position.trailingStop
+          }
+        } else if (position.type === 'sell' && candle.low < position.trailingActivation) {
+          const newTrail = candle.low + currentATR
+          if (newTrail < position.trailingStop) {
+            position.trailingStop = newTrail
+            if (position.trailingStop < position.stopLoss) position.stopLoss = position.trailingStop
+          }
         }
       }
     }
@@ -285,6 +321,7 @@ export async function simulateOnCandles(
                 trailingActivation: trailAct,
                 trailingStop: sl,
                 entryIndex: i,
+                breakevenHit: false,
               }
             }
           }
@@ -329,6 +366,12 @@ export async function simulateOnCandles(
     : 0
   const sharpe = stdReturn > 0 ? (avgReturn / stdReturn) * Math.sqrt(252) : 0
 
+  // Sortino ratio (penalizes only downside volatility)
+  const downsideDev = Math.sqrt(
+    returns.reduce((s, r) => s + Math.min(0, r) ** 2, 0) / returns.length
+  )
+  const sortino = downsideDev > 0 ? (avgReturn / downsideDev) * Math.sqrt(252) : 0
+
   // Average trade duration
   let avgDurationMs = 0
   if (trades.length > 0) {
@@ -357,6 +400,7 @@ export async function simulateOnCandles(
       profitFactor: grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0,
       maxDrawdown,
       sharpeRatio: sharpe,
+      sortinoRatio: sortino,
       avgTradeDuration: `${avgDurationHours}h`,
       tradesPerMonth,
     },
@@ -436,6 +480,9 @@ export async function scoreResult(r: SimResult): Promise<number> {
   if (m.totalTrades >= 20) score += 3
   if (m.totalTrades >= 30) score += 2
   if (m.totalTrades >= 50) score += 2
+
+  // Sortino bonus (5%) — reward strategies with good downside protection
+  score += Math.min(5, m.sortinoRatio * 2)
 
   // Anti-overfit: suspiciously high win rate with few trades
   if (m.winRate > 0.85 && m.totalTrades < 20) score -= 10

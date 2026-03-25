@@ -143,25 +143,63 @@ export async function tickPaperSession(sessionId: string): Promise<{
       return { action: 'close', trade: closed, reason: `Time exit after ${candlesSinceEntry} candles` }
     }
 
-    // Trailing stop: update SL if price moved favorably
+    // Breakeven: move SL to entry once price advances 0.5x ATR
     const currentATR = await getCurrentATR(session.symbol, session.timeframe as Timeframe)
-    if (currentATR) {
+    if (currentATR && !trade.metadata?.breakeven_hit) {
       const entryPrice = Number(trade.entry_price)
-      const trailActivation = trade.type === 'buy'
-        ? entryPrice + currentATR
-        : entryPrice - currentATR
+      const beActivation = trade.type === 'buy'
+        ? entryPrice + currentATR * 0.5
+        : entryPrice - currentATR * 0.5
+      const shouldActivateBE = trade.type === 'buy'
+        ? price >= beActivation
+        : price <= beActivation
+      if (shouldActivateBE) {
+        const newSL = trade.type === 'buy'
+          ? Math.max(sl, entryPrice)
+          : Math.min(sl, entryPrice)
+        await supabase.from('paper_trades').update({
+          stop_loss: newSL,
+          metadata: { ...trade.metadata, breakeven_hit: true },
+        }).eq('id', trade.id)
+        sl = newSL
+      }
+    }
 
-      if (trade.type === 'buy' && price > trailActivation) {
-        const newTrailSL = price - currentATR
-        if (newTrailSL > sl) {
-          await supabase.from('paper_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
-          sl = newTrailSL
+    // Trailing stop: update SL if price moved favorably
+    if (currentATR) {
+      if (params.trailing_stop_mode === 'ema') {
+        // EMA-based adaptive trailing: SL follows EMA ± 0.5*ATR buffer
+        const emaPeriod = params.trailing_ema_period ?? 20
+        const emaVal = await getCurrentEMATrail(session.symbol, session.timeframe as Timeframe, emaPeriod)
+        if (emaVal !== null) {
+          const newSL = trade.type === 'buy'
+            ? emaVal - currentATR * 0.5
+            : emaVal + currentATR * 0.5
+          const isBetter = trade.type === 'buy' ? newSL > sl : newSL < sl
+          if (isBetter) {
+            await supabase.from('paper_trades').update({ stop_loss: newSL }).eq('id', trade.id)
+            sl = newSL
+          }
         }
-      } else if (trade.type === 'sell' && price < trailActivation) {
-        const newTrailSL = price + currentATR
-        if (newTrailSL < sl) {
-          await supabase.from('paper_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
-          sl = newTrailSL
+      } else {
+        // Default ATR-based trailing
+        const entryPrice = Number(trade.entry_price)
+        const trailActivation = trade.type === 'buy'
+          ? entryPrice + currentATR
+          : entryPrice - currentATR
+
+        if (trade.type === 'buy' && price > trailActivation) {
+          const newTrailSL = price - currentATR
+          if (newTrailSL > sl) {
+            await supabase.from('paper_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
+            sl = newTrailSL
+          }
+        } else if (trade.type === 'sell' && price < trailActivation) {
+          const newTrailSL = price + currentATR
+          if (newTrailSL < sl) {
+            await supabase.from('paper_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
+            sl = newTrailSL
+          }
         }
       }
     }
@@ -317,6 +355,20 @@ function getTimeframeMs(tf: string): number {
     '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000,
   }
   return map[tf] ?? 3_600_000
+}
+
+/** Get current EMA value for trailing stop */
+async function getCurrentEMATrail(symbol: string, timeframe: Timeframe, period: number): Promise<number | null> {
+  try {
+    const endDate = new Date().toISOString()
+    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    const candles = await getCandles({ symbol, timeframe, startDate, endDate, limit: 100 })
+    if (candles.length < period + 5) return null
+    const ema = calculateEMA(candles, period)
+    return ema.length > 0 ? ema[ema.length - 1].value : null
+  } catch {
+    return null
+  }
 }
 
 /** Get current ATR value for a symbol/timeframe */
