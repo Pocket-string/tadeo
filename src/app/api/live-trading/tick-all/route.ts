@@ -244,7 +244,23 @@ export async function POST(req: NextRequest) {
         if (shouldClose) {
           // Execute REAL close order on Binance
           const closeSide = trade.type === 'buy' ? 'SELL' : 'BUY'
-          const qty = Number(trade.quantity)
+          let qty = Number(trade.quantity)
+
+          // For SELL orders, query actual asset balance to avoid "insufficient balance"
+          // (Binance fees reduce the received quantity on BUY)
+          if (closeSide === 'SELL') {
+            try {
+              const balances = await exchange.getBalance()
+              const asset = session.symbol.replace('USDT', '').replace('USDC', '')
+              const assetBalance = balances.find(b => b.asset === asset)
+              if (assetBalance && assetBalance.free < qty) {
+                qty = assetBalance.free
+              }
+            } catch {
+              // If balance check fails, reduce qty by 0.2% to account for fees
+              qty = qty * 0.998
+            }
+          }
 
           try {
             const order = await exchange.placeOrder({
