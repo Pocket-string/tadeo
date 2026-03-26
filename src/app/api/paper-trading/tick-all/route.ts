@@ -204,21 +204,21 @@ export async function POST(req: NextRequest) {
         let exitPrice = 0
         let exitReason = ''
 
-        // Simulate slippage: SL exits get 0.1% worse, TP exits get 0.05% worse
+        // Simulate slippage: use market price (not SL/TP level) to match real exchange fills
         if (trade.type === 'buy') {
           if (price <= sl) {
-            exitPrice = sl * (1 - SLIPPAGE_SL) // slips lower on SL
+            exitPrice = price * (1 - SLIPPAGE_SL) // market sell at current price with slippage
             exitReason = 'stop_loss'; closed = true
           } else if (price >= tp) {
-            exitPrice = tp * (1 - SLIPPAGE_TP) // slightly worse on TP
+            exitPrice = price * (1 - SLIPPAGE_TP) // market sell at current price
             exitReason = 'take_profit'; closed = true
           }
         } else {
           if (price >= sl) {
-            exitPrice = sl * (1 + SLIPPAGE_SL) // slips higher on SL (worse for short)
+            exitPrice = price * (1 + SLIPPAGE_SL) // market buy at current price with slippage
             exitReason = 'stop_loss'; closed = true
           } else if (price <= tp) {
-            exitPrice = tp * (1 + SLIPPAGE_TP)
+            exitPrice = price * (1 + SLIPPAGE_TP)
             exitReason = 'take_profit'; closed = true
           }
         }
