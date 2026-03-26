@@ -451,8 +451,20 @@ export async function POST(req: NextRequest) {
       const riskAmount = Number(session.current_capital) * riskPct
       const quantity = riskAmount / stopDist
 
-      // Cap quantity by available capital (spot trading = no leverage)
-      const maxByCapital = Number(session.current_capital) / price * 0.98 // 98% max to leave fee buffer
+      // Cap quantity by REAL Binance balance (not DB capital which may be stale)
+      let availableCapital = Number(session.current_capital)
+      try {
+        const balances = await exchange.getBalance()
+        const quoteAsset = session.symbol.endsWith('USDC') ? 'USDC' : 'USDT'
+        const quoteBalance = balances.find(b => b.asset === quoteAsset)
+        if (quoteBalance) {
+          availableCapital = Math.min(availableCapital, quoteBalance.free)
+        }
+      } catch {
+        // If balance check fails, use DB capital with larger safety margin
+        availableCapital = availableCapital * 0.95
+      }
+      const maxByCapital = availableCapital / price * 0.98 // 98% max to leave fee buffer
       const finalQuantity = Math.min(quantity, maxByCapital)
 
       if (riskAmount < 0.5 || finalQuantity <= 0) {
