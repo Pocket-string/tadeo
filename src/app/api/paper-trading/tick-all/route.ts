@@ -420,7 +420,10 @@ export async function POST(req: NextRequest) {
       const stopDist = currentATR * slMult
       const riskPct = RISK_TIERS[riskTier]?.riskPerTrade ?? 0.03
       const riskAmount = Number(session.current_capital) * riskPct
-      const quantity = riskAmount / stopDist
+      const rawQuantity = riskAmount / stopDist
+      // Cap quantity by available capital (no implicit leverage)
+      const maxByCapital = Number(session.current_capital) / price * 0.98
+      const quantity = Math.min(rawQuantity, maxByCapital)
 
       if (riskAmount < 0.5 || quantity <= 0) {
         results.push({
