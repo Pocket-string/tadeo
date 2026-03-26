@@ -23,7 +23,7 @@ const navItems: NavItem[] = [
   { href: '/ai-analyst', label: 'AI Analyst', icon: AIIcon, roles: ['admin', 'trader'] },
   { href: '/paper-trading', label: 'Paper Trading', icon: PaperIcon, roles: ['admin', 'trader'] },
   { href: '/discoveries', label: 'Discoveries', icon: DiscoveryIcon, roles: ['admin', 'trader'] },
-  { href: '/live-trading', label: 'Live Trading', icon: LiveIcon, roles: ['admin'] },
+  { href: '/live-trading', label: 'Live Trading', icon: LiveIcon, roles: ['admin', 'trader'] },
 ]
 
 export function Sidebar() {
