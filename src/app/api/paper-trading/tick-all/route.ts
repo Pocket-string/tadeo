@@ -308,7 +308,8 @@ export async function POST(req: NextRequest) {
         }
 
         // Trailing stop: update SL if price moved favorably
-        if (currentATR) {
+        // IMPORTANT: Only trail AFTER breakeven has been hit (trade is in profit)
+        if (currentATR && trade.metadata?.breakeven_hit) {
           let trailUpdated = false
 
           if (params.trailing_stop_mode === 'ema') {
@@ -316,16 +317,21 @@ export async function POST(req: NextRequest) {
             const emaPeriod = params.trailing_ema_period ?? 20
             const emaVal = await getCachedEMATrail(cacheKey, session.symbol, session.timeframe as Timeframe, emaPeriod, supabase)
             if (emaVal !== null) {
+              const entryPrice = Number(trade.entry_price)
               const newSL = trade.type === 'buy'
                 ? emaVal - currentATR * 0.5
                 : emaVal + currentATR * 0.5
-              const isBetter = trade.type === 'buy' ? newSL > sl : newSL < sl
+              // Never trail SL below entry once breakeven is active
+              const floorSL = trade.type === 'buy'
+                ? Math.max(newSL, entryPrice)
+                : Math.min(newSL, entryPrice)
+              const isBetter = trade.type === 'buy' ? floorSL > sl : floorSL < sl
               if (isBetter) {
-                await supabase.from('paper_trades').update({ stop_loss: newSL }).eq('id', trade.id)
+                await supabase.from('paper_trades').update({ stop_loss: floorSL }).eq('id', trade.id)
                 results.push({
                   sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe,
                   riskTier, action: 'trail',
-                  reason: `EMA trailing SL ${trade.type === 'buy' ? 'raised' : 'lowered'} to ${newSL.toFixed(2)}`,
+                  reason: `EMA trailing SL ${trade.type === 'buy' ? 'raised' : 'lowered'} to ${floorSL.toFixed(2)}`,
                   price,
                 })
                 trailUpdated = true
