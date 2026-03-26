@@ -72,6 +72,7 @@ export async function POST(req: NextRequest) {
 
   htfBiasCache = new Map()
   atrCache.clear()
+  emaTrailCache.clear()
 
   const supabase = getServiceClient()
   const exchange = getExchangeClient()
@@ -227,7 +228,7 @@ export async function POST(req: NextRequest) {
 
       if (openTrades && openTrades.length > 0) {
         const trade = openTrades[0]
-        const sl = Number(trade.stop_loss)
+        let sl = Number(trade.stop_loss)
         const tp = Number(trade.take_profit)
         let shouldClose = false
         let exitReason = ''
@@ -291,36 +292,104 @@ export async function POST(req: NextRequest) {
           continue
         }
 
-        // Trailing stop update (DB only — closes via market order on next tick)
+        // ── Breakeven + Trailing Stop (parity with paper trading) ────────
         const cacheKey = `${session.symbol}:${session.timeframe}`
         const currentATR = await getCachedATR(cacheKey, session.symbol, session.timeframe as Timeframe, supabase)
-        if (currentATR) {
-          const entryPrice = Number(trade.entry_price)
-          const trailActivation = trade.type === 'buy'
-            ? entryPrice + currentATR
-            : entryPrice - currentATR
 
-          if (trade.type === 'buy' && price > trailActivation) {
-            const newTrailSL = price - currentATR
-            if (newTrailSL > sl) {
-              await supabase.from('live_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
-              results.push({
-                sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
-                action: 'trail', reason: `Trailing SL raised to ${newTrailSL.toFixed(2)}`, price,
-              })
-              continue
+        // Resolve entry_atr from metadata or backfill from SL distance
+        const tradeMeta = (trade.metadata as Record<string, unknown>) || {}
+        let entryATR = Number(tradeMeta.entry_atr) || null
+        if (!entryATR && currentATR) {
+          const slDist = Math.abs(Number(trade.entry_price) - Number(trade.stop_loss))
+          const slMult = params.stop_loss_pct > 1 ? params.stop_loss_pct : 1.5
+          entryATR = slDist / slMult
+          await supabase.from('live_trades').update({
+            metadata: { ...tradeMeta, entry_atr: entryATR },
+          }).eq('id', trade.id)
+        }
+        const effectiveATR = entryATR ?? currentATR ?? 0
+
+        // Breakeven: move SL to entry once price advances 0.5x entry_atr
+        if (currentATR && !tradeMeta.breakeven_hit) {
+          const entryPrice = Number(trade.entry_price)
+          const beActivation = trade.type === 'buy'
+            ? entryPrice + effectiveATR * 0.5
+            : entryPrice - effectiveATR * 0.5
+          const shouldActivateBE = trade.type === 'buy'
+            ? price >= beActivation
+            : price <= beActivation
+          if (shouldActivateBE) {
+            const newSL = trade.type === 'buy'
+              ? Math.max(sl, entryPrice)
+              : Math.min(sl, entryPrice)
+            await supabase.from('live_trades').update({
+              stop_loss: newSL,
+              metadata: { ...tradeMeta, breakeven_hit: true },
+            }).eq('id', trade.id)
+
+            results.push({
+              sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
+              action: 'trail', reason: `Breakeven activated: SL moved to entry ${entryPrice.toFixed(2)}`, price,
+            })
+            continue
+          }
+        }
+
+        // Trailing stop: EMA-based or ATR-based
+        if (currentATR) {
+          let trailUpdated = false
+
+          if (params.trailing_stop_mode === 'ema') {
+            const emaPeriod = params.trailing_ema_period ?? 20
+            const emaVal = await getCachedEMATrail(cacheKey, session.symbol, session.timeframe as Timeframe, emaPeriod, supabase)
+            if (emaVal !== null) {
+              const newSL = trade.type === 'buy'
+                ? emaVal - currentATR * 0.5
+                : emaVal + currentATR * 0.5
+              const isBetter = trade.type === 'buy' ? newSL > sl : newSL < sl
+              if (isBetter) {
+                await supabase.from('live_trades').update({ stop_loss: newSL }).eq('id', trade.id)
+                results.push({
+                  sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
+                  action: 'trail',
+                  reason: `EMA trailing SL ${trade.type === 'buy' ? 'raised' : 'lowered'} to ${newSL.toFixed(2)}`,
+                  price,
+                })
+                trailUpdated = true
+              }
             }
-          } else if (trade.type === 'sell' && price < trailActivation) {
-            const newTrailSL = price + currentATR
-            if (newTrailSL < sl) {
-              await supabase.from('live_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
-              results.push({
-                sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
-                action: 'trail', reason: `Trailing SL lowered to ${newTrailSL.toFixed(2)}`, price,
-              })
-              continue
+          } else {
+            // Default ATR-based trailing
+            const entryPrice = Number(trade.entry_price)
+            const activationATR = effectiveATR || currentATR
+            const trailActivation = trade.type === 'buy'
+              ? entryPrice + activationATR
+              : entryPrice - activationATR
+
+            if (trade.type === 'buy' && price > trailActivation) {
+              const newTrailSL = price - currentATR
+              if (newTrailSL > sl) {
+                await supabase.from('live_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
+                results.push({
+                  sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
+                  action: 'trail', reason: `Trailing SL raised to ${newTrailSL.toFixed(2)}`, price,
+                })
+                trailUpdated = true
+              }
+            } else if (trade.type === 'sell' && price < trailActivation) {
+              const newTrailSL = price + currentATR
+              if (newTrailSL < sl) {
+                await supabase.from('live_trades').update({ stop_loss: newTrailSL }).eq('id', trade.id)
+                results.push({
+                  sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
+                  action: 'trail', reason: `Trailing SL lowered to ${newTrailSL.toFixed(2)}`, price,
+                })
+                trailUpdated = true
+              }
             }
           }
+
+          if (trailUpdated) continue
         }
 
         results.push({
@@ -331,7 +400,7 @@ export async function POST(req: NextRequest) {
       }
 
       // No open position — check for signal (reuse paper signal engine)
-      const sigKey = `${session.symbol}:${session.timeframe}`
+      const sigKey = `${session.symbol}:${session.timeframe}:${session.strategy_id}`
       if (!signalCache.has(sigKey)) {
         signalCache.set(sigKey, await checkSignalFull(session.symbol, session.timeframe as Timeframe, params, supabase))
       }
@@ -355,7 +424,11 @@ export async function POST(req: NextRequest) {
       const riskAmount = Number(session.current_capital) * riskPct
       const quantity = riskAmount / stopDist
 
-      if (riskAmount < 0.5 || quantity <= 0) {
+      // Cap quantity by available capital (spot trading = no leverage)
+      const maxByCapital = Number(session.current_capital) / price * 0.98 // 98% max to leave fee buffer
+      const finalQuantity = Math.min(quantity, maxByCapital)
+
+      if (riskAmount < 0.5 || finalQuantity <= 0) {
         results.push({
           sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
           action: 'skip', reason: 'Insufficient capital for position sizing', price,
@@ -370,7 +443,7 @@ export async function POST(req: NextRequest) {
           symbol: session.symbol,
           side: side as 'BUY' | 'SELL',
           type: 'MARKET',
-          quantity,
+          quantity: finalQuantity,
         })
 
         const entryPrice = order.filledPrice ?? price
@@ -392,12 +465,13 @@ export async function POST(req: NextRequest) {
             stop_loss: stopLoss,
             take_profit: takeProfit,
             exchange_order_id: order.orderId,
+            metadata: { active_systems: signalSystems ?? [], entry_atr: currentATR },
           })
 
         results.push({
           sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
           action: signal,
-          reason: `[${riskTier}] ${signalReason} | Entry:${entryPrice.toFixed(2)} SL:${stopLoss.toFixed(2)} TP:${takeProfit.toFixed(2)} Qty:${(order.filledQty || quantity).toFixed(4)}`,
+          reason: `[${riskTier}] ${signalReason} | Entry:${entryPrice.toFixed(2)} SL:${stopLoss.toFixed(2)} TP:${takeProfit.toFixed(2)} Qty:${(order.filledQty || finalQuantity).toFixed(4)}`,
           price, exchangeOrderId: order.orderId,
         })
       } catch (orderErr) {
@@ -486,7 +560,31 @@ async function updateSessionStats(
 // ── Signal Engine (shared with paper trading) ───────────────────────────────
 
 const atrCache = new Map<string, number | null>()
+const emaTrailCache = new Map<string, number | null>()
 let htfBiasCache = new Map<string, 'bull' | 'bear' | 'neutral'>()
+
+async function getCachedEMATrail(key: string, symbol: string, timeframe: Timeframe, period: number, dbClient: SupabaseClient): Promise<number | null> {
+  const cacheKey = `${key}:${period}`
+  if (emaTrailCache.has(cacheKey)) return emaTrailCache.get(cacheKey)!
+  try {
+    const tfMs = getTimeframeMs(timeframe)
+    const lookbackMs = tfMs > 0 ? tfMs * 120 : 30 * 24 * 60 * 60 * 1000
+    const candles = await getCandles({
+      symbol, timeframe,
+      startDate: new Date(Date.now() - lookbackMs).toISOString(),
+      endDate: new Date().toISOString(),
+      limit: 100,
+    }, { client: dbClient })
+    if (candles.length < period + 5) { emaTrailCache.set(cacheKey, null); return null }
+    const ema = calculateEMA(candles, period)
+    const val = ema.length > 0 ? ema[ema.length - 1].value : null
+    emaTrailCache.set(cacheKey, val)
+    return val
+  } catch {
+    emaTrailCache.set(cacheKey, null)
+    return null
+  }
+}
 
 async function getCachedATR(key: string, symbol: string, timeframe: Timeframe, dbClient: SupabaseClient): Promise<number | null> {
   if (atrCache.has(key)) return atrCache.get(key)!

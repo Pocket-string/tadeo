@@ -44,6 +44,7 @@ export interface LiveTrade {
   exit_time: string | null
   exit_reason: string | null
   exchange_order_id: string | null
+  metadata: Record<string, unknown> | null
   created_at: string
 }
 

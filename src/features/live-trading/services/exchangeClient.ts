@@ -7,6 +7,75 @@ function signQuery(query: string, secret: string): string {
   return crypto.createHmac('sha256', secret).update(query).digest('hex')
 }
 
+// ── Symbol Info Cache (LOT_SIZE, MIN_NOTIONAL, PRICE_FILTER) ──────────────
+interface SymbolFilter {
+  stepSize: number     // LOT_SIZE step (e.g. 0.01 for SOL)
+  minQty: number       // LOT_SIZE minimum quantity
+  minNotional: number  // MIN_NOTIONAL (e.g. 5 USDT)
+  tickSize: number     // PRICE_FILTER tick size
+}
+
+const symbolInfoCache = new Map<string, SymbolFilter>()
+
+/** Fetch and cache symbol trading rules from Binance exchangeInfo */
+export async function getSymbolFilter(symbol: string): Promise<SymbolFilter> {
+  if (symbolInfoCache.has(symbol)) return symbolInfoCache.get(symbol)!
+
+  const response = await fetch(
+    `${BINANCE_API}/api/v3/exchangeInfo?symbol=${symbol}`,
+    { cache: 'no-store' }
+  )
+  if (!response.ok) {
+    // Fallback defaults for SOLUSDT if API fails
+    return { stepSize: 0.01, minQty: 0.01, minNotional: 5, tickSize: 0.01 }
+  }
+
+  const data = await response.json()
+  const symbolInfo = data.symbols?.[0]
+  if (!symbolInfo) {
+    return { stepSize: 0.01, minQty: 0.01, minNotional: 5, tickSize: 0.01 }
+  }
+
+  const filters = symbolInfo.filters as { filterType: string; stepSize?: string; minQty?: string; minNotional?: string; tickSize?: string }[]
+
+  const lotSize = filters.find(f => f.filterType === 'LOT_SIZE')
+  const notional = filters.find(f => f.filterType === 'NOTIONAL') || filters.find(f => f.filterType === 'MIN_NOTIONAL')
+  const priceFilter = filters.find(f => f.filterType === 'PRICE_FILTER')
+
+  const info: SymbolFilter = {
+    stepSize: parseFloat(lotSize?.stepSize || '0.01'),
+    minQty: parseFloat(lotSize?.minQty || '0.01'),
+    minNotional: parseFloat(notional?.minNotional || '5'),
+    tickSize: parseFloat(priceFilter?.tickSize || '0.01'),
+  }
+
+  symbolInfoCache.set(symbol, info)
+  return info
+}
+
+/** Round quantity down to the nearest valid step size */
+export function roundQuantity(quantity: number, stepSize: number): number {
+  const precision = Math.max(0, Math.round(-Math.log10(stepSize)))
+  const factor = Math.pow(10, precision)
+  return Math.floor(quantity * factor) / factor
+}
+
+/** Validate order meets Binance minimum requirements */
+export function validateOrder(
+  quantity: number,
+  price: number,
+  filter: SymbolFilter
+): { valid: boolean; reason?: string } {
+  if (quantity < filter.minQty) {
+    return { valid: false, reason: `Quantity ${quantity} below minimum ${filter.minQty}` }
+  }
+  const notional = quantity * price
+  if (notional < filter.minNotional) {
+    return { valid: false, reason: `Notional ${notional.toFixed(2)} below minimum ${filter.minNotional}` }
+  }
+  return { valid: true }
+}
+
 /**
  * Binance Exchange Client for live trading.
  * Requires BINANCE_API_KEY and BINANCE_API_SECRET env vars.
@@ -50,15 +119,25 @@ export function createBinanceClient(): ExchangeClient {
 
   return {
     async placeOrder(params) {
+      // Apply LOT_SIZE compliance
+      const filter = await getSymbolFilter(params.symbol)
+      const roundedQty = roundQuantity(params.quantity, filter.stepSize)
+
+      const price = params.price ?? (await this.getPrice(params.symbol))
+      const validation = validateOrder(roundedQty, price, filter)
+      if (!validation.valid) {
+        throw new Error(`Order validation failed: ${validation.reason}`)
+      }
+
       const orderParams: Record<string, string> = {
         symbol: params.symbol,
         side: params.side,
         type: params.type,
-        quantity: params.quantity.toFixed(8),
+        quantity: roundedQty.toFixed(Math.max(0, Math.round(-Math.log10(filter.stepSize)))),
       }
 
       if (params.type === 'LIMIT' && params.price) {
-        orderParams.price = params.price.toFixed(8)
+        orderParams.price = params.price.toFixed(Math.max(0, Math.round(-Math.log10(filter.tickSize))))
         orderParams.timeInForce = 'GTC'
       }
 
