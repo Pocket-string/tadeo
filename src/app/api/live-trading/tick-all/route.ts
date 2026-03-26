@@ -361,13 +361,18 @@ export async function POST(req: NextRequest) {
             const emaVal = await getCachedEMATrail(cacheKey, session.symbol, session.timeframe as Timeframe, emaPeriod, supabase)
             if (emaVal !== null) {
               const entryPrice = Number(trade.entry_price)
-              const newSL = trade.type === 'buy'
+              const emaTrailSL = trade.type === 'buy'
                 ? emaVal - currentATR * 0.5
                 : emaVal + currentATR * 0.5
+              // Cap SL so it never exceeds current price minus a buffer
+              // This prevents EMA (lagging indicator) from setting SL above price in downtrends
+              const cappedSL = trade.type === 'buy'
+                ? Math.min(emaTrailSL, price - currentATR * 0.3)
+                : Math.max(emaTrailSL, price + currentATR * 0.3)
               // Never trail SL below entry once breakeven is active
               const floorSL = trade.type === 'buy'
-                ? Math.max(newSL, entryPrice)
-                : Math.min(newSL, entryPrice)
+                ? Math.max(cappedSL, entryPrice)
+                : Math.min(cappedSL, entryPrice)
               const isBetter = trade.type === 'buy' ? floorSL > sl : floorSL < sl
               if (isBetter) {
                 await supabase.from('live_trades').update({ stop_loss: floorSL }).eq('id', trade.id)
