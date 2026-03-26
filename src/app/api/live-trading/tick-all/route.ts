@@ -474,7 +474,7 @@ export async function POST(req: NextRequest) {
           ? entryPrice + currentATR * tpMult
           : entryPrice - currentATR * tpMult
 
-        await supabase
+        const { data: inserted } = await supabase
           .from('live_trades')
           .insert({
             user_id: session.user_id,
@@ -489,6 +489,10 @@ export async function POST(req: NextRequest) {
             exchange_order_id: order.orderId,
             metadata: { active_systems: signalSystems ?? [], entry_atr: currentATR },
           })
+          .select('id')
+
+        // If conflict (duplicate open trade), skip silently
+        if (!inserted || inserted.length === 0) continue
 
         results.push({
           sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
