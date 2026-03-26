@@ -53,7 +53,7 @@ interface TickResult {
 }
 
 type SignalCheckResult =
-  | { signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[] }
+  | { signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[]; regime: string }
   | { signal: null; rejectionReason: string }
 
 export async function POST(req: NextRequest) {
@@ -441,7 +441,7 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      const { signal, atr: currentATR, reason: signalReason, activeSystems: signalSystems } = signalResult
+      const { signal, atr: currentATR, reason: signalReason, activeSystems: signalSystems, regime: signalRegime } = signalResult
 
       // Position sizing
       const slMult = params.stop_loss_pct > 1 ? params.stop_loss_pct : 1.5
@@ -504,7 +504,7 @@ export async function POST(req: NextRequest) {
             stop_loss: stopLoss,
             take_profit: takeProfit,
             exchange_order_id: order.orderId,
-            metadata: { active_systems: signalSystems ?? [], entry_atr: currentATR },
+            metadata: { active_systems: signalSystems ?? [], entry_atr: currentATR, regime: signalRegime },
           })
           .select('id')
 
@@ -711,9 +711,9 @@ async function checkSignalFull(
 
   const htfBias = await getCachedHTFBias(symbol, timeframe, dbClient)
   if (htfBias === 'bull' && signal === 'sell') return { signal: null, rejectionReason: `htf_blocked:bias=bull,signal=sell` }
-  if (htfBias === 'bear' && signal === 'buy') return { signal: null, rejectionReason: `htf_blocked:bias=bear,signal=buy` }
+  if (htfBias === 'bear') return { signal: null, rejectionReason: `bear_regime_pause:bias=bear,signal=${signal}` }
 
-  return { signal, atr: ctx.atr, reason: composite.activeSystems.join(' + '), activeSystems: composite.activeSystems }
+  return { signal, atr: ctx.atr, reason: composite.activeSystems.join(' + '), activeSystems: composite.activeSystems, regime: htfBias }
 }
 
 async function getCachedHTFBias(symbol: string, currentTf: Timeframe, dbClient: SupabaseClient): Promise<'bull' | 'bear' | 'neutral'> {

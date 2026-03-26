@@ -47,7 +47,7 @@ interface TickResult {
 
 // Signal check result with rejection reason for observability
 type SignalCheckResult =
-  | { signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[] }
+  | { signal: 'buy' | 'sell'; atr: number; reason: string; activeSystems: string[]; regime: string }
   | { signal: null; rejectionReason: string }
 
 export async function POST(req: NextRequest) {
@@ -412,7 +412,7 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      const { signal, atr: currentATR, reason: signalReason, activeSystems: signalSystems } = signalResult
+      const { signal, atr: currentATR, reason: signalReason, activeSystems: signalSystems, regime: signalRegime } = signalResult
 
       // Open paper trade with ATR-based SL/TP
       const slMult = params.stop_loss_pct > 1 ? params.stop_loss_pct : 1.5
@@ -461,7 +461,7 @@ export async function POST(req: NextRequest) {
           quantity,
           stop_loss: stopLoss,
           take_profit: takeProfit,
-          metadata: { active_systems: signalSystems ?? [], slippage: SLIPPAGE_ENTRY, entry_atr: currentATR },
+          metadata: { active_systems: signalSystems ?? [], slippage: SLIPPAGE_ENTRY, entry_atr: currentATR, regime: signalRegime },
         })
         .select('id')
 
@@ -683,11 +683,11 @@ async function checkSignalFull(
   // Higher-timeframe trend filter — block signals against 4h/1d trend
   const htfBias = await getCachedHTFBias(symbol, timeframe, dbClient)
   if (htfBias === 'bull' && signal === 'sell') return { signal: null, rejectionReason: `htf_blocked:bias=bull,signal=sell` }
-  if (htfBias === 'bear' && signal === 'buy') return { signal: null, rejectionReason: `htf_blocked:bias=bear,signal=buy` }
+  if (htfBias === 'bear') return { signal: null, rejectionReason: `bear_regime_pause:bias=bear,signal=${signal}` }
 
   const reason = composite.activeSystems.join(' + ')
 
-  return { signal, atr: ctx.atr, reason, activeSystems: composite.activeSystems }
+  return { signal, atr: ctx.atr, reason, activeSystems: composite.activeSystems, regime: htfBias }
 }
 
 async function getCachedHTFBias(symbol: string, currentTf: Timeframe, dbClient: SupabaseClient): Promise<'bull' | 'bear' | 'neutral'> {
