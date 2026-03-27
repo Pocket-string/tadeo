@@ -313,51 +313,44 @@ export async function POST(req: NextRequest) {
           let trailUpdated = false
 
           if (params.trailing_stop_mode === 'ema') {
-            // Progressive EMA trailing: scales with trade progress toward TP
-            const emaPeriod = params.trailing_ema_period ?? 20
-            const emaVal = await getCachedEMATrail(cacheKey, session.symbol, session.timeframe as Timeframe, emaPeriod, supabase)
-            if (emaVal !== null) {
-              const entryPrice = Number(trade.entry_price)
-              const tp = Number(trade.take_profit)
-              const progress = trade.type === 'buy'
-                ? (price - entryPrice) / (tp - entryPrice || 1)
-                : (entryPrice - price) / (entryPrice - tp || 1)
-              const clampedProgress = Math.max(0, Math.min(progress, 1.5))
+            // Profit-Lock trailing: locks in % of unrealized profit + tight price trail
+            const entryPrice = Number(trade.entry_price)
+            const tp = Number(trade.take_profit)
+            const range = Math.abs(tp - entryPrice) || 1
+            const progress = trade.type === 'buy'
+              ? (price - entryPrice) / range
+              : (entryPrice - price) / range
+            const clampedProgress = Math.max(0, Math.min(progress, 1.5))
 
-              let newSL: number
-              let trailMode: string
-              if (clampedProgress < 0.3) {
-                // Early phase: ATR-based trailing (simple, reliable)
-                newSL = trade.type === 'buy'
-                  ? Math.max(entryPrice, price - currentATR)
-                  : Math.min(entryPrice, price + currentATR)
-                trailMode = 'atr-early'
-              } else {
-                // Progressive phase: EMA trailing with dynamic cap that relaxes as trade progresses
-                const emaTrailSL = trade.type === 'buy'
-                  ? emaVal - currentATR * 0.5
-                  : emaVal + currentATR * 0.5
-                const capBuffer = currentATR * Math.max(0.2, 1.0 - clampedProgress)
-                const cappedSL = trade.type === 'buy'
-                  ? Math.min(emaTrailSL, price - capBuffer)
-                  : Math.max(emaTrailSL, price + capBuffer)
-                newSL = trade.type === 'buy'
-                  ? Math.max(cappedSL, entryPrice)
-                  : Math.min(cappedSL, entryPrice)
-                trailMode = 'ema-progressive'
-              }
+            let lockPct: number
+            if (clampedProgress < 0.15) lockPct = 0
+            else if (clampedProgress < 0.4) lockPct = 0.3
+            else if (clampedProgress < 0.7) lockPct = 0.5
+            else lockPct = 0.7
 
-              const isBetter = trade.type === 'buy' ? newSL > sl : newSL < sl
-              if (isBetter) {
-                await supabase.from('paper_trades').update({ stop_loss: newSL }).eq('id', trade.id)
-                results.push({
-                  sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe,
-                  riskTier, action: 'trail',
-                  reason: `EMA trailing SL ${trade.type === 'buy' ? 'raised' : 'lowered'} to ${newSL.toFixed(2)} (progress=${(clampedProgress * 100).toFixed(0)}%, ${trailMode})`,
-                  price,
-                })
-                trailUpdated = true
-              }
+            const unrealizedProfit = trade.type === 'buy'
+              ? price - entryPrice : entryPrice - price
+            const profitLockSL = trade.type === 'buy'
+              ? entryPrice + lockPct * unrealizedProfit
+              : entryPrice - lockPct * unrealizedProfit
+            const tightTrailSL = trade.type === 'buy'
+              ? price - currentATR * 0.4
+              : price + currentATR * 0.4
+
+            const newSL = trade.type === 'buy'
+              ? Math.max(profitLockSL, tightTrailSL, entryPrice)
+              : Math.min(profitLockSL, tightTrailSL, entryPrice)
+
+            const isBetter = trade.type === 'buy' ? newSL > sl : newSL < sl
+            if (isBetter) {
+              await supabase.from('paper_trades').update({ stop_loss: newSL }).eq('id', trade.id)
+              results.push({
+                sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe,
+                riskTier, action: 'trail',
+                reason: `Profit-lock SL ${trade.type === 'buy' ? 'raised' : 'lowered'} to ${newSL.toFixed(2)} (progress=${(clampedProgress * 100).toFixed(0)}%, lock=${(lockPct * 100).toFixed(0)}%)`,
+                price,
+              })
+              trailUpdated = true
             }
           } else {
             // Default ATR-based trailing — use effectiveATR for activation, currentATR for distance
