@@ -29,7 +29,15 @@ export async function getCandles(
   const { data, error } = await q
 
   if (error) throw new Error(`Failed to fetch candles: ${error.message}`)
-  return data ?? []
+  // Supabase returns `numeric` columns as strings — coerce to numbers
+  return (data ?? []).map(c => ({
+    ...c,
+    open: Number(c.open),
+    high: Number(c.high),
+    low: Number(c.low),
+    close: Number(c.close),
+    volume: Number(c.volume),
+  }))
 }
 
 export async function importCandles(input: ImportCandlesInput): Promise<{ inserted: number }> {

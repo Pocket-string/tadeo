@@ -12,16 +12,17 @@ export function calculateEMA(candles: OHLCVCandle[], period: number): EMAResult[
   const results: EMAResult[] = []
 
   // SMA inicial como seed del EMA
+  // Note: Number() coercion guards against Supabase returning numeric cols as strings
   let sum = 0
   for (let i = 0; i < period; i++) {
-    sum += candles[i].close
+    sum += Number(candles[i].close)
   }
   let ema = sum / period
   results.push({ timestamp: candles[period - 1].timestamp, value: ema })
 
   // EMA a partir del periodo
   for (let i = period; i < candles.length; i++) {
-    ema = candles[i].close * k + ema * (1 - k)
+    ema = Number(candles[i].close) * k + ema * (1 - k)
     results.push({ timestamp: candles[i].timestamp, value: ema })
   }
 
@@ -158,7 +159,7 @@ export function calculateBollingerBands(
 
   for (let i = period - 1; i < candles.length; i++) {
     const slice = candles.slice(i - period + 1, i + 1)
-    const closes = slice.map(c => c.close)
+    const closes = slice.map(c => Number(c.close))
 
     const sma = closes.reduce((a, b) => a + b, 0) / period
     const variance = closes.reduce((sum, val) => sum + Math.pow(val - sma, 2), 0) / period
@@ -191,9 +192,9 @@ export function calculateATR(candles: OHLCVCandle[], period: number): ATRResult[
   const trueRanges: number[] = []
 
   for (let i = 1; i < candles.length; i++) {
-    const high = candles[i].high
-    const low = candles[i].low
-    const prevClose = candles[i - 1].close
+    const high = Number(candles[i].high)
+    const low = Number(candles[i].low)
+    const prevClose = Number(candles[i - 1].close)
     const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose))
     trueRanges.push(tr)
   }
