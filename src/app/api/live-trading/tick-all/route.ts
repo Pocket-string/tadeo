@@ -357,29 +357,47 @@ export async function POST(req: NextRequest) {
           let trailUpdated = false
 
           if (params.trailing_stop_mode === 'ema') {
+            // Progressive EMA trailing: scales with trade progress toward TP
             const emaPeriod = params.trailing_ema_period ?? 20
             const emaVal = await getCachedEMATrail(cacheKey, session.symbol, session.timeframe as Timeframe, emaPeriod, supabase)
             if (emaVal !== null) {
               const entryPrice = Number(trade.entry_price)
-              const emaTrailSL = trade.type === 'buy'
-                ? emaVal - currentATR * 0.5
-                : emaVal + currentATR * 0.5
-              // Cap SL so it never exceeds current price minus a buffer
-              // This prevents EMA (lagging indicator) from setting SL above price in downtrends
-              const cappedSL = trade.type === 'buy'
-                ? Math.min(emaTrailSL, price - currentATR * 0.3)
-                : Math.max(emaTrailSL, price + currentATR * 0.3)
-              // Never trail SL below entry once breakeven is active
-              const floorSL = trade.type === 'buy'
-                ? Math.max(cappedSL, entryPrice)
-                : Math.min(cappedSL, entryPrice)
-              const isBetter = trade.type === 'buy' ? floorSL > sl : floorSL < sl
+              const tp = Number(trade.take_profit)
+              const progress = trade.type === 'buy'
+                ? (price - entryPrice) / (tp - entryPrice || 1)
+                : (entryPrice - price) / (entryPrice - tp || 1)
+              const clampedProgress = Math.max(0, Math.min(progress, 1.5))
+
+              let newSL: number
+              let trailMode: string
+              if (clampedProgress < 0.3) {
+                // Early phase: ATR-based trailing (simple, reliable)
+                newSL = trade.type === 'buy'
+                  ? Math.max(entryPrice, price - currentATR)
+                  : Math.min(entryPrice, price + currentATR)
+                trailMode = 'atr-early'
+              } else {
+                // Progressive phase: EMA trailing with dynamic cap that relaxes as trade progresses
+                const emaTrailSL = trade.type === 'buy'
+                  ? emaVal - currentATR * 0.5
+                  : emaVal + currentATR * 0.5
+                const capBuffer = currentATR * Math.max(0.2, 1.0 - clampedProgress)
+                const cappedSL = trade.type === 'buy'
+                  ? Math.min(emaTrailSL, price - capBuffer)
+                  : Math.max(emaTrailSL, price + capBuffer)
+                newSL = trade.type === 'buy'
+                  ? Math.max(cappedSL, entryPrice)
+                  : Math.min(cappedSL, entryPrice)
+                trailMode = 'ema-progressive'
+              }
+
+              const isBetter = trade.type === 'buy' ? newSL > sl : newSL < sl
               if (isBetter) {
-                await supabase.from('live_trades').update({ stop_loss: floorSL }).eq('id', trade.id)
+                await supabase.from('live_trades').update({ stop_loss: newSL }).eq('id', trade.id)
                 results.push({
                   sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
                   action: 'trail',
-                  reason: `EMA trailing SL ${trade.type === 'buy' ? 'raised' : 'lowered'} to ${floorSL.toFixed(2)}`,
+                  reason: `EMA trailing SL ${trade.type === 'buy' ? 'raised' : 'lowered'} to ${newSL.toFixed(2)} (progress=${(clampedProgress * 100).toFixed(0)}%, ${trailMode})`,
                   price,
                 })
                 trailUpdated = true

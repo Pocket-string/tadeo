@@ -13,9 +13,26 @@ import {
   getLiveDashboard,
   getStrategiesForLive,
   getBinanceBalance,
+  getLiveAgentLog,
+  getLiveSignalAttribution,
 } from '@/actions/live-trading'
 import type { LiveSession, LiveTrade, DailyReport } from '../types'
 import { TRADING_PAIRS } from '@/shared/lib/trading-pairs'
+import { formatAgentEventType, formatExitReason, formatDuration, gradeColor } from '@/features/paper-trading/utils/formatters'
+
+function computeGrade(session: LiveSession): string {
+  if (session.total_trades < 5) return '—'
+  const wr = session.total_trades > 0 ? session.winning_trades / session.total_trades : 0
+  const pnl = Number(session.net_pnl)
+  if (wr >= 0.6 && pnl > 0) return 'A'
+  if (wr >= 0.5 && pnl >= 0) return 'B'
+  if (wr >= 0.45) return 'C'
+  if (wr >= 0.35) return 'D'
+  return 'F'
+}
+
+type AgentLogEntry = { event_type: string; reason: string; price: number | null; pnl: number | null; created_at: string; symbol: string; timeframe: string }
+type AttributionEntry = { system: string; wins: number; losses: number; winRate: number; contribution: string }
 
 export function LiveTradingDashboard() {
   const [sessions, setSessions] = useState<LiveSession[]>([])
@@ -25,6 +42,7 @@ export function LiveTradingDashboard() {
     openTrades: LiveTrade[]
     closedTrades: LiveTrade[]
     currentPrice: number | null
+    pnlHistory: { timestamp: string; pnl: number }[]
   } | null>(null)
   const [report, setReport] = useState<DailyReport | null>(null)
   const [strategies, setStrategies] = useState<{ id: string; name: string }[]>([])
@@ -35,6 +53,12 @@ export function LiveTradingDashboard() {
   const [lastTickResult, setLastTickResult] = useState<string | null>(null)
   const [binanceBalance, setBinanceBalance] = useState<{ asset: string; free: number; locked: number }[] | null>(null)
   const [confirmStart, setConfirmStart] = useState(false)
+
+  // New state for parity with paper
+  const [agentLog, setAgentLog] = useState<AgentLogEntry[]>([])
+  const [logSort, setLogSort] = useState<'recent' | 'best'>('recent')
+  const [attribution, setAttribution] = useState<AttributionEntry[]>([])
+  const [attributionWindow, setAttributionWindow] = useState(15)
 
   // Form state
   const [newStrategyId, setNewStrategyId] = useState('')
@@ -55,14 +79,20 @@ export function LiveTradingDashboard() {
     }
   }, [newStrategyId])
 
-  const loadDashboard = useCallback(async (sessionId: string) => {
+  const loadDashboard = useCallback(async (sessionId: string, attrLimit?: number) => {
     try {
-      const data = await getLiveDashboard(sessionId)
+      const [data, log, attr] = await Promise.all([
+        getLiveDashboard(sessionId),
+        getLiveAgentLog(30),
+        getLiveSignalAttribution(sessionId, attrLimit ?? attributionWindow),
+      ])
       setDashboard(data)
+      setAgentLog(log)
+      setAttribution(attr)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error cargando dashboard')
     }
-  }, [])
+  }, [attributionWindow])
 
   useEffect(() => { loadSessions() }, [loadSessions])
   useEffect(() => { if (activeSession) loadDashboard(activeSession) }, [activeSession, loadDashboard])
@@ -114,7 +144,7 @@ export function LiveTradingDashboard() {
 
   const handleKillSwitch = async () => {
     if (!activeSession) return
-    if (!confirm('⚠️ KILL SWITCH: Esto cerrará TODAS las posiciones inmediatamente. ¿Confirmar?')) return
+    if (!confirm('KILL SWITCH: Esto cerrará TODAS las posiciones inmediatamente. ¿Confirmar?')) return
     try {
       const result = await triggerKillSwitch(activeSession, 'Activado manualmente por usuario')
       setError(null)
@@ -183,7 +213,7 @@ export function LiveTradingDashboard() {
     )
   }
 
-  const hasApiKeys = true // We can't check env vars client-side, but the server will error if missing
+  const grade = dashboard ? computeGrade(dashboard.session) : '—'
 
   return (
     <div className="space-y-6">
@@ -200,21 +230,6 @@ export function LiveTradingDashboard() {
           <button onClick={() => setLastTickResult(null)} className="ml-2 font-bold">×</button>
         </div>
       )}
-
-      {/* Warning Banner */}
-      <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4">
-        <div className="flex items-start gap-3">
-          <span className="text-2xl">⚠️</span>
-          <div>
-            <p className="font-semibold text-amber-800">Trading Live — Dinero Real</p>
-            <p className="text-sm text-amber-700">
-              Las operaciones se ejecutan en el exchange con fondos reales.
-              Asegúrate de tener configuradas las API keys de Binance con permisos de trading.
-              {!process.env.NEXT_PUBLIC_HAS_EXCHANGE_KEYS && ' Sin API keys configuradas se usará el simulador.'}
-            </p>
-          </div>
-        </div>
-      </div>
 
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -310,6 +325,65 @@ export function LiveTradingDashboard() {
           >
             Iniciar Trading Real
           </button>
+        </div>
+      )}
+
+      {/* Agent Decision Feed */}
+      {agentLog.length > 0 && (
+        <div className="bg-white rounded-2xl shadow-card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <h3 className="font-semibold text-neutral-800">Agente — Decisiones Live</h3>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                <span className="text-xs text-green-600 font-medium">Cron activo</span>
+              </span>
+            </div>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setLogSort('recent')}
+                className={`px-2 py-0.5 text-xs rounded ${logSort === 'recent' ? 'bg-primary-100 text-primary-700 font-medium' : 'text-neutral-400 hover:text-neutral-600'}`}
+              >
+                Recientes
+              </button>
+              <button
+                onClick={() => setLogSort('best')}
+                className={`px-2 py-0.5 text-xs rounded ${logSort === 'best' ? 'bg-primary-100 text-primary-700 font-medium' : 'text-neutral-400 hover:text-neutral-600'}`}
+              >
+                Mejores
+              </button>
+            </div>
+          </div>
+          <div className="border-t pt-3 max-h-72 overflow-y-auto space-y-1.5">
+            {[...agentLog].sort((a, b) => {
+              if (logSort === 'best') return (b.pnl ?? -Infinity) - (a.pnl ?? -Infinity)
+              return 0
+            }).map((entry, idx) => {
+              const { label, color } = formatAgentEventType(entry.event_type)
+              const isAction = ['buy', 'sell', 'close'].includes(entry.event_type)
+              return (
+                <div key={idx} className={`flex items-start justify-between text-xs gap-2 py-1 ${isAction ? 'border-l-2 border-primary-300 pl-2 -ml-2' : ''}`}>
+                  <div className="flex items-start gap-2 min-w-0">
+                    <span className="text-neutral-300 shrink-0 font-mono tabular-nums">
+                      {new Date(entry.created_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                    <div className="min-w-0">
+                      <span className="text-neutral-600 font-medium">{entry.symbol} {entry.timeframe}</span>
+                      <span className={`ml-2 font-semibold ${color}`}>{label}</span>
+                      {entry.reason && (
+                        <span className="ml-1 text-neutral-400 truncate block max-w-xs">{entry.reason}</span>
+                      )}
+                    </div>
+                  </div>
+                  {entry.pnl !== null && (
+                    <span className={`shrink-0 font-medium tabular-nums ${entry.pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {entry.pnl >= 0 ? '+' : ''}${Number(entry.pnl).toFixed(2)}
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 
@@ -429,7 +503,12 @@ export function LiveTradingDashboard() {
               value={`${(Number(dashboard.session.max_drawdown_pct ?? 0) * 100).toFixed(1)}%`}
               color={Number(dashboard.session.max_drawdown_pct ?? 0) > 0.1 ? 'red' : undefined}
             />
-            <KPICard label="Posiciones" value={String(dashboard.openTrades.length)} />
+            <KPICard
+              label="Salud"
+              value={grade}
+              tooltip="A: WR≥60%+profit, B: WR≥50%, C: WR≥45%, D: WR≥35%, F: <35%"
+              badgeColor={gradeColor(grade)}
+            />
           </div>
 
           {/* Open Trades */}
@@ -481,28 +560,85 @@ export function LiveTradingDashboard() {
             </div>
           )}
 
+          {/* Signal Attribution */}
+          {attribution.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-neutral-800">Atribución de Señales</h3>
+                <div className="flex items-center gap-1">
+                  {([15, 30, 50] as const).map(w => (
+                    <button
+                      key={w}
+                      onClick={async () => {
+                        setAttributionWindow(w)
+                        if (activeSession) await loadDashboard(activeSession, w)
+                      }}
+                      className={`px-2 py-1 text-xs rounded-lg transition ${attributionWindow === w ? 'bg-primary-100 text-primary-700 font-medium' : 'text-neutral-400 hover:text-neutral-600'}`}
+                    >
+                      {w}
+                    </button>
+                  ))}
+                  <span className="text-xs text-neutral-400 ml-1">trades</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {attribution.map((item, i) => {
+                  const total = item.wins + item.losses
+                  const isTop = i === 0
+                  return (
+                    <div key={item.system} className={`flex items-center gap-3 ${isTop ? 'bg-green-50 rounded-lg px-2 py-1 -mx-2' : ''}`}>
+                      <span className="text-xs text-neutral-600 w-36 shrink-0 font-mono">{item.system}</span>
+                      <div className="flex-1 bg-neutral-100 rounded-full h-2 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${item.winRate >= 0.65 ? 'bg-green-500' : item.winRate >= 0.5 ? 'bg-amber-400' : 'bg-red-400'}`}
+                          style={{ width: `${Math.round(item.winRate * 100)}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-neutral-500 w-24 text-right tabular-nums">
+                        {Math.round(item.winRate * 100)}% <span className="text-neutral-300">({total})</span>
+                      </span>
+                      <span className={`text-xs font-bold w-8 text-right ${item.contribution === '+++' ? 'text-green-600' : item.contribution === '++' ? 'text-green-500' : item.contribution === '=' ? 'text-neutral-400' : 'text-red-500'}`}>
+                        {item.contribution}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Equity Curve */}
+          {dashboard.pnlHistory.length > 1 && (
+            <div className="bg-white rounded-2xl shadow-card p-4">
+              <h3 className="font-semibold text-neutral-800 mb-3">Curva de Equity</h3>
+              <EquityCurve data={dashboard.pnlHistory} initialCapital={Number(dashboard.session.initial_capital)} />
+            </div>
+          )}
+
           {/* Closed Trades */}
           {dashboard.closedTrades.length > 0 && (
             <div className="bg-white rounded-2xl shadow-card p-4">
               <h3 className="font-semibold text-neutral-800 mb-3">
                 Historial de Trades ({dashboard.closedTrades.length})
               </h3>
-              <div className="overflow-x-auto max-h-64 overflow-y-auto">
+              {/* Desktop table */}
+              <div className="hidden sm:block overflow-x-auto max-h-64 overflow-y-auto">
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 bg-white">
                     <tr className="text-xs text-neutral-500 border-b">
                       <th className="text-left py-2">Tipo</th>
                       <th className="text-right py-2">Entrada</th>
                       <th className="text-right py-2">Salida</th>
+                      <th className="text-right py-2">Duración</th>
                       <th className="text-right py-2">PnL</th>
                       <th className="text-right py-2">%</th>
-                      <th className="text-left py-2">Razón</th>
+                      <th className="text-left py-2 pl-3">Razón</th>
                       <th className="text-left py-2">Order ID</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[...dashboard.closedTrades].reverse().map(trade => (
-                      <tr key={trade.id} className="border-b border-neutral-100">
+                      <tr key={trade.id} className={`border-b border-neutral-100 ${Number(trade.pnl) > 0 ? 'hover:bg-green-50' : 'hover:bg-red-50'} transition`}>
                         <td className="py-2">
                           <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                             trade.type === 'buy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
@@ -512,18 +648,39 @@ export function LiveTradingDashboard() {
                         </td>
                         <td className="text-right py-2">${Number(trade.entry_price).toLocaleString()}</td>
                         <td className="text-right py-2">${Number(trade.exit_price).toLocaleString()}</td>
+                        <td className="text-right py-2 text-neutral-400 text-xs">
+                          {formatDuration(trade.entry_time, trade.exit_time)}
+                        </td>
                         <td className={`text-right py-2 font-medium ${Number(trade.pnl) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                           {Number(trade.pnl) >= 0 ? '+' : ''}${Number(trade.pnl).toFixed(2)}
                         </td>
                         <td className={`text-right py-2 ${Number(trade.pnl_pct) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                           {(Number(trade.pnl_pct) * 100).toFixed(1)}%
                         </td>
-                        <td className="py-2 text-xs text-neutral-500">{trade.exit_reason}</td>
+                        <td className="py-2 pl-3 text-xs text-neutral-500">{formatExitReason(trade.exit_reason)}</td>
                         <td className="py-2 text-xs text-neutral-400 font-mono">{trade.exchange_order_id ?? '—'}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+              {/* Mobile cards */}
+              <div className="sm:hidden space-y-2 max-h-96 overflow-y-auto">
+                {[...dashboard.closedTrades].reverse().map(trade => (
+                  <div key={trade.id} className={`border rounded-xl p-3 text-xs space-y-1 ${Number(trade.pnl) > 0 ? 'border-green-100' : 'border-red-100'}`}>
+                    <div className="flex justify-between items-center">
+                      <span className={`px-2 py-0.5 rounded-full font-medium ${trade.type === 'buy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{trade.type.toUpperCase()}</span>
+                      <span className={`font-bold ${Number(trade.pnl) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {Number(trade.pnl) >= 0 ? '+' : ''}${Number(trade.pnl).toFixed(2)} ({(Number(trade.pnl_pct) * 100).toFixed(1)}%)
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-neutral-500">
+                      <span>${Number(trade.entry_price).toLocaleString()} → ${Number(trade.exit_price).toLocaleString()}</span>
+                      <span>{formatDuration(trade.entry_time, trade.exit_time)}</span>
+                    </div>
+                    <div className="text-neutral-400">{formatExitReason(trade.exit_reason)}</div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -619,13 +776,20 @@ function SessionStatusBadge({ status }: { status: string }) {
   )
 }
 
-function KPICard({ label, value, color }: { label: string; value: string; color?: 'green' | 'red' }) {
+function KPICard({ label, value, color, tooltip, badgeColor }: { label: string; value: string; color?: 'green' | 'red'; tooltip?: string; badgeColor?: string }) {
   return (
-    <div className="bg-white rounded-2xl shadow-card p-4">
-      <p className="text-xs text-neutral-500">{label}</p>
-      <p className={`text-lg font-bold ${color === 'green' ? 'text-green-600' : color === 'red' ? 'text-red-600' : 'text-neutral-800'}`}>
-        {value}
+    <div className="bg-white rounded-2xl shadow-card p-4" title={tooltip}>
+      <p className="text-xs text-neutral-500 flex items-center gap-1">
+        {label}
+        {tooltip && <span className="text-neutral-300 cursor-help" title={tooltip}>?</span>}
       </p>
+      {badgeColor ? (
+        <span className={`inline-block px-3 py-1 rounded-full text-xl font-bold ${badgeColor}`}>{value}</span>
+      ) : (
+        <p className={`text-lg font-bold ${color === 'green' ? 'text-green-600' : color === 'red' ? 'text-red-600' : 'text-neutral-800'}`}>
+          {value}
+        </p>
+      )}
     </div>
   )
 }
@@ -641,5 +805,37 @@ function RecommendationBadge({ rec }: { rec: string }) {
     <span className={`px-3 py-1 rounded-full text-xs font-semibold ${colors[rec] ?? colors.continue}`}>
       {rec.toUpperCase()}
     </span>
+  )
+}
+
+function EquityCurve({ data, initialCapital }: { data: { timestamp: string; pnl: number }[]; initialCapital: number }) {
+  const width = 600
+  const height = 200
+  const padding = { top: 20, right: 20, bottom: 25, left: 60 }
+
+  const values = data.map(d => initialCapital + d.pnl)
+  const min = Math.min(initialCapital, ...values)
+  const max = Math.max(initialCapital, ...values)
+  const range = max - min || 1
+
+  const toX = (i: number) => padding.left + (i / (data.length - 1)) * (width - padding.left - padding.right)
+  const toY = (v: number) => height - padding.bottom - ((v - min) / range) * (height - padding.top - padding.bottom)
+
+  const points = data.map((d, i) => `${toX(i)},${toY(initialCapital + d.pnl)}`).join(' ')
+  const baseY = toY(initialCapital)
+  const fillPoints = data.map((d, i) => `${toX(i)},${toY(initialCapital + d.pnl)}`).join(' ')
+  const lastX = toX(data.length - 1)
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-48">
+      <polyline fill="rgba(239,68,68,0.08)" stroke="none" points={`${toX(0)},${baseY} ${fillPoints} ${lastX},${baseY}`} />
+      <line x1={padding.left} y1={baseY} x2={width - padding.right} y2={baseY} stroke="#94a3b8" strokeWidth="1" strokeDasharray="4,4" />
+      <polyline fill="none" stroke="#6366f1" strokeWidth="2" points={points} />
+      <text x={padding.left - 5} y={toY(max) + 4} fontSize="9" fill="#94a3b8" textAnchor="end">${max.toLocaleString()}</text>
+      <text x={padding.left - 5} y={toY(initialCapital) + 4} fontSize="9" fill="#94a3b8" textAnchor="end">${initialCapital.toLocaleString()}</text>
+      <text x={padding.left - 5} y={toY(min) + 4} fontSize="9" fill="#94a3b8" textAnchor="end">${min.toLocaleString()}</text>
+      <text x={padding.left} y={height - 5} fontSize="9" fill="#94a3b8">{data[0].timestamp.split('T')[0]}</text>
+      <text x={width - padding.right} y={height - 5} fontSize="9" fill="#94a3b8" textAnchor="end">{data[data.length - 1].timestamp.split('T')[0]}</text>
+    </svg>
   )
 }

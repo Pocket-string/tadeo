@@ -66,6 +66,7 @@ export async function getLiveDashboard(sessionId: string): Promise<{
   openTrades: LiveTrade[]
   closedTrades: LiveTrade[]
   currentPrice: number | null
+  pnlHistory: { timestamp: string; pnl: number }[]
 }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -87,6 +88,7 @@ export async function getLiveDashboard(sessionId: string): Promise<{
     .order('created_at', { ascending: true })
 
   const allTrades = (trades ?? []) as LiveTrade[]
+  const closedTrades = allTrades.filter(t => t.status === 'closed')
 
   let currentPrice = null
   try {
@@ -101,12 +103,65 @@ export async function getLiveDashboard(sessionId: string): Promise<{
     // Non-blocking
   }
 
+  // Build P&L history from closed trades
+  let equity = Number(session.initial_capital)
+  const pnlHistory = closedTrades.map(t => {
+    equity += Number(t.pnl)
+    return { timestamp: t.exit_time ?? t.created_at, pnl: equity - Number(session.initial_capital) }
+  })
+
   return {
     session: session as LiveSession,
     openTrades: allTrades.filter(t => t.status === 'open'),
-    closedTrades: allTrades.filter(t => t.status === 'closed'),
+    closedTrades,
     currentPrice,
+    pnlHistory,
   }
+}
+
+export async function getLiveSignalAttribution(sessionId: string, limit = 15): Promise<{
+  system: string
+  wins: number
+  losses: number
+  winRate: number
+  contribution: string
+}[]> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  const { data: trades } = await supabase
+    .from('live_trades')
+    .select('pnl, metadata, exit_reason')
+    .eq('session_id', sessionId)
+    .eq('status', 'closed')
+    .not('exit_reason', 'eq', 'session_stopped')
+    .order('exit_time', { ascending: false })
+    .limit(limit)
+
+  if (!trades || trades.length === 0) return []
+
+  const systemStats: Record<string, { wins: number; losses: number }> = {}
+
+  for (const trade of trades) {
+    const systems: string[] = (trade.metadata as { active_systems?: string[] } | null)?.active_systems ?? []
+    const isWin = Number(trade.pnl) > 0
+
+    for (const sys of systems) {
+      if (!systemStats[sys]) systemStats[sys] = { wins: 0, losses: 0 }
+      if (isWin) systemStats[sys].wins++
+      else systemStats[sys].losses++
+    }
+  }
+
+  return Object.entries(systemStats)
+    .map(([system, stats]) => {
+      const total = stats.wins + stats.losses
+      const winRate = total > 0 ? stats.wins / total : 0
+      const contribution = winRate >= 0.65 ? '+++' : winRate >= 0.5 ? '++' : winRate >= 0.4 ? '=' : '-'
+      return { system, wins: stats.wins, losses: stats.losses, winRate, contribution }
+    })
+    .sort((a, b) => b.winRate - a.winRate)
 }
 
 export async function getBinanceBalance(): Promise<{ asset: string; free: number; locked: number }[]> {
