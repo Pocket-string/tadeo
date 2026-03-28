@@ -431,8 +431,10 @@ export async function POST(req: NextRequest) {
       const riskPct = RISK_TIERS[riskTier]?.riskPerTrade ?? 0.03
       const riskAmount = Number(session.current_capital) * riskPct
       const rawQuantity = riskAmount / stopDist
-      // Cap quantity by available capital (no implicit leverage)
-      const maxByCapital = Number(session.current_capital) / price * 0.98
+      // Cap quantity by available capital, scaled by risk tier allocation
+      // Conservative (1%) → 15% of capital, Moderate (3%) → 45%, Aggressive (7%) → 100%
+      const tierAllocation = Math.min(riskPct * 15, 1.0)
+      const maxByCapital = Number(session.current_capital) * tierAllocation / price * 0.98
       const quantity = Math.min(rawQuantity, maxByCapital)
 
       if (riskAmount < 0.5 || quantity <= 0) {

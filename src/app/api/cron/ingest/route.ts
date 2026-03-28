@@ -38,7 +38,20 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: `Failed to query sessions: ${sessError.message}` }, { status: 500 })
   }
 
+  // Also fetch active live trading sessions (critical: prevents stale data when no paper sessions are active)
+  const { data: liveSessions } = await supabase
+    .from('live_sessions')
+    .select('symbol, timeframe')
+    .eq('status', 'active')
+
   const pairSet = new Map<string, Set<string>>()
+
+  for (const s of (liveSessions ?? [])) {
+    if (!pairSet.has(s.symbol)) pairSet.set(s.symbol, new Set())
+    pairSet.get(s.symbol)!.add(s.timeframe)
+    const htf = getHTFTimeframe(s.timeframe)
+    pairSet.get(s.symbol)!.add(htf)
+  }
 
   for (const s of (sessions ?? [])) {
     if (!pairSet.has(s.symbol)) pairSet.set(s.symbol, new Set())

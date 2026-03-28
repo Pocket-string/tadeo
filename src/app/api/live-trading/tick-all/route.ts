@@ -272,9 +272,15 @@ export async function POST(req: NextRequest) {
 
             const exitPrice = order.filledPrice ?? price
             const entryPrice = Number(trade.entry_price)
-            const pnl = trade.type === 'buy'
+            const rawPnl = trade.type === 'buy'
               ? (exitPrice - entryPrice) * qty
               : (entryPrice - exitPrice) * qty
+            // Deduct commissions: close commission + entry commission (stored in metadata)
+            const closeCommission = order.commissionAsset === 'USDT'
+              ? order.commission
+              : order.commission * exitPrice
+            const entryCommission = Number((trade.metadata as Record<string, unknown>)?.entryCommissionUsdt ?? 0)
+            const pnl = rawPnl - closeCommission - entryCommission
             const pnlPct = pnl / (entryPrice * qty)
 
             await supabase
@@ -475,7 +481,7 @@ export async function POST(req: NextRequest) {
         // If balance check fails, use DB capital with larger safety margin
         availableCapital = availableCapital * 0.95
       }
-      const maxByCapital = availableCapital / price * 0.98 // 98% max to leave fee buffer
+      const maxByCapital = availableCapital / price * 0.95 // 95% max to account for fees + race conditions
       const finalQuantity = Math.min(quantity, maxByCapital)
 
       if (riskAmount < 0.5 || finalQuantity <= 0) {
@@ -515,7 +521,14 @@ export async function POST(req: NextRequest) {
             stop_loss: stopLoss,
             take_profit: takeProfit,
             exchange_order_id: order.orderId,
-            metadata: { active_systems: signalSystems ?? [], entry_atr: currentATR, regime: signalRegime },
+            metadata: {
+              active_systems: signalSystems ?? [],
+              entry_atr: currentATR,
+              regime: signalRegime,
+              entryCommissionUsdt: order.commissionAsset === 'USDT'
+                ? order.commission
+                : order.commission * (order.filledPrice ?? price),
+            },
           })
           .select('id')
 
@@ -529,10 +542,47 @@ export async function POST(req: NextRequest) {
           price, exchangeOrderId: order.orderId,
         })
       } catch (orderErr) {
+        const errMsg = orderErr instanceof Error ? orderErr.message : 'Unknown'
+
+        // Retry once with 90% quantity if insufficient balance (race condition)
+        if (errMsg.includes('-2010') || errMsg.includes('insufficient balance')) {
+          try {
+            const retryQty = finalQuantity * 0.90
+            const retryOrder = await exchange.placeOrder({
+              symbol: session.symbol,
+              side: side as 'BUY' | 'SELL',
+              type: 'MARKET',
+              quantity: retryQty,
+            })
+            const entryPrice = retryOrder.filledPrice ?? price
+            const stopLoss = signal === 'buy' ? entryPrice - stopDist : entryPrice + stopDist
+            const takeProfit = signal === 'buy'
+              ? entryPrice + currentATR * tpMult
+              : entryPrice - currentATR * tpMult
+            await supabase.from('live_trades').insert({
+              user_id: session.user_id, strategy_id: session.strategy_id, session_id: session.id,
+              symbol: session.symbol, type: signal, entry_price: entryPrice,
+              quantity: retryOrder.filledQty || retryQty, stop_loss: stopLoss, take_profit: takeProfit,
+              exchange_order_id: retryOrder.orderId,
+              metadata: {
+                active_systems: signalSystems ?? [], entry_atr: currentATR, regime: signalRegime,
+                entryCommissionUsdt: retryOrder.commissionAsset === 'USDT'
+                  ? retryOrder.commission : retryOrder.commission * entryPrice,
+                retried: true,
+              },
+            }).select('id')
+            results.push({
+              sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
+              action: signal, reason: `[retry@90%] Entry:${entryPrice.toFixed(2)} Qty:${retryQty.toFixed(4)}`, price,
+            })
+            continue
+          } catch { /* retry also failed, fall through to error logging */ }
+        }
+
         results.push({
           sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
           action: 'error',
-          reason: `Order failed: ${orderErr instanceof Error ? orderErr.message : 'Unknown'}`,
+          reason: `Order failed: ${errMsg}`,
           price,
         })
       }

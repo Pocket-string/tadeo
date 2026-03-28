@@ -99,6 +99,8 @@ export interface ExchangeOrder {
   status: 'NEW' | 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELLED' | 'REJECTED'
   filledPrice: number | null
   filledQty: number
+  commission: number
+  commissionAsset: string | null
   timestamp: string
 }
 

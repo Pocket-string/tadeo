@@ -158,6 +158,9 @@ export function createBinanceClient(): ExchangeClient {
             s + parseFloat(f.price) * parseFloat(f.qty), 0) / parseFloat(data.executedQty || '1')
           : null,
         filledQty: parseFloat(data.executedQty || '0'),
+        commission: data.fills?.reduce((s: number, f: { commission: string }) =>
+          s + parseFloat(f.commission), 0) ?? 0,
+        commissionAsset: data.fills?.[0]?.commissionAsset ?? null,
         timestamp: new Date(data.transactTime).toISOString(),
       }
     },
@@ -187,6 +190,8 @@ export function createBinanceClient(): ExchangeClient {
         status: data.status,
         filledPrice: parseFloat(data.price || '0'),
         filledQty: parseFloat(data.executedQty || '0'),
+        commission: 0,
+        commissionAsset: null,
         timestamp: new Date(data.time).toISOString(),
       }
     },
@@ -237,6 +242,8 @@ export function createSimulatedClient(): ExchangeClient {
         status: 'FILLED',
         filledPrice: price,
         filledQty: params.quantity,
+        commission: params.quantity * price * 0.001,
+        commissionAsset: params.side === 'BUY' ? params.symbol.replace('USDT', '').replace('USDC', '') : 'USDT',
         timestamp: new Date().toISOString(),
       }
     },
@@ -257,6 +264,8 @@ export function createSimulatedClient(): ExchangeClient {
         status: 'FILLED' as const,
         filledPrice: 0,
         filledQty: 0,
+        commission: 0,
+        commissionAsset: null,
         timestamp: new Date().toISOString(),
       }
     },
