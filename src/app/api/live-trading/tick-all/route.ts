@@ -470,18 +470,20 @@ export async function POST(req: NextRequest) {
 
       // Cap quantity by REAL Binance balance (not DB capital which may be stale)
       let availableCapital = Number(session.current_capital)
+      let realBalance = -1
       try {
         const balances = await exchange.getBalance()
         const quoteAsset = session.symbol.endsWith('USDC') ? 'USDC' : 'USDT'
         const quoteBalance = balances.find(b => b.asset === quoteAsset)
         if (quoteBalance) {
+          realBalance = quoteBalance.free
           availableCapital = Math.min(availableCapital, quoteBalance.free)
         }
       } catch {
         // If balance check fails, use DB capital with larger safety margin
-        availableCapital = availableCapital * 0.95
+        availableCapital = availableCapital * 0.90
       }
-      const maxByCapital = availableCapital / price * 0.95 // 95% max to account for fees + race conditions
+      const maxByCapital = availableCapital / price * 0.90 // 90% max to account for fees + dust + race conditions
       const finalQuantity = Math.min(quantity, maxByCapital)
 
       if (riskAmount < 0.5 || finalQuantity <= 0) {
@@ -561,10 +563,10 @@ export async function POST(req: NextRequest) {
       } catch (orderErr) {
         const errMsg = orderErr instanceof Error ? orderErr.message : 'Unknown'
 
-        // Retry once with 90% quantity if insufficient balance (race condition)
+        // Retry once with 80% quantity if insufficient balance (race condition / dust)
         if (errMsg.includes('-2010') || errMsg.includes('insufficient balance')) {
           try {
-            const retryQty = finalQuantity * 0.90
+            const retryQty = finalQuantity * 0.80
             const retryOrder = await exchange.placeOrder({
               symbol: session.symbol,
               side: side as 'BUY' | 'SELL',
@@ -599,7 +601,7 @@ export async function POST(req: NextRequest) {
         results.push({
           sessionId: session.id, symbol: session.symbol, timeframe: session.timeframe, riskTier,
           action: 'error',
-          reason: `Order failed: ${errMsg}`,
+          reason: `Order failed: ${errMsg} | bal=$${realBalance.toFixed(2)} cap=$${availableCapital.toFixed(2)} qty=${finalQuantity.toFixed(4)}`,
           price,
         })
       }
