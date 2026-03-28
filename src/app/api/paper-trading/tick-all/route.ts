@@ -450,6 +450,28 @@ export async function POST(req: NextRequest) {
         continue
       }
 
+      // Fee-ratio guard: never trade if fees > 20% of potential reward
+      const estimatedFee = price * quantity * 0.002 // 0.1% per side roundtrip
+      const potentialReward = currentATR * tpMult * quantity
+      if (potentialReward > 0 && estimatedFee / potentialReward > 0.20) {
+        await supabase.from('paper_agent_log').insert({
+          session_id: session.id, symbol: session.symbol, timeframe: session.timeframe,
+          event_type: 'skip_entry',
+          reason: `fee_ratio_exceeded: ${(estimatedFee / potentialReward * 100).toFixed(1)}% (fee=$${estimatedFee.toFixed(4)}, reward=$${potentialReward.toFixed(4)})`,
+          price, created_at: new Date().toISOString(),
+        })
+        results.push({
+          sessionId: session.id,
+          symbol: session.symbol,
+          timeframe: session.timeframe,
+          riskTier,
+          action: 'hold',
+          reason: `Fee ratio ${(estimatedFee / potentialReward * 100).toFixed(1)}% exceeds 20% cap`,
+          price,
+        })
+        continue
+      }
+
       // Apply entry slippage: buy fills slightly higher, sell fills slightly lower
       const entryPrice = signal === 'buy'
         ? price * (1 + SLIPPAGE_ENTRY)

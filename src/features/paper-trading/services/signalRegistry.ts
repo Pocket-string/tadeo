@@ -126,10 +126,10 @@ export function generateComposite(
   let direction: 'long' | 'short' | 'neutral' = 'neutral'
   let totalConfidence = 0
 
-  if (normalizedLong > normalizedShort && normalizedLong > 0.3) {
+  if (normalizedLong > normalizedShort && normalizedLong > 0.45) {
     direction = 'long'
     totalConfidence = normalizedLong
-  } else if (normalizedShort > normalizedLong && normalizedShort > 0.3) {
+  } else if (normalizedShort > normalizedLong && normalizedShort > 0.45) {
     direction = 'short'
     totalConfidence = normalizedShort
   }
