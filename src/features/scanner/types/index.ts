@@ -36,6 +36,8 @@ export interface Opportunity {
   takeProfit: number
   riskRewardRatio: number
   atr: number
+  compositeConfidence: number // 0-1, from 7-signal composite system
+  activeSignals: string[] // e.g. ['ema-cross:long(75%)', 'bb-mean-rev:long(60%)']
   indicators: {
     emaFast: number
     emaSlow: number

@@ -62,14 +62,34 @@ function OpportunityCard({
         </div>
       </div>
 
-      {/* Signal */}
+      {/* Signal + Composite Confidence */}
       <div className="flex items-center gap-4">
         <span className={`text-xl font-bold uppercase ${signalColor}`}>
           {opp.signal}
         </span>
         <span className="text-foreground">@ ${opp.price.toFixed(2)}</span>
         <span className="text-xs text-foreground/40">R:R {opp.riskRewardRatio.toFixed(1)}:1</span>
+        <span className={`text-xs px-2 py-0.5 rounded ${opp.compositeConfidence >= 0.6 ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
+          {(opp.compositeConfidence * 100).toFixed(0)}% conf
+        </span>
       </div>
+
+      {/* Active Signals */}
+      {opp.activeSignals.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {opp.activeSignals.map((sig, i) => {
+            const isLong = sig.includes(':long')
+            return (
+              <span
+                key={i}
+                className={`text-[10px] px-1.5 py-0.5 rounded ${isLong ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}
+              >
+                {sig.split(':')[0]}
+              </span>
+            )
+          })}
+        </div>
+      )}
 
       {/* Stops */}
       <div className="grid grid-cols-3 gap-2 text-xs">

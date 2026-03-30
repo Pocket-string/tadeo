@@ -2,16 +2,21 @@ import type { OHLCVCandle, Timeframe } from '@/features/market-data/types'
 import type { Opportunity, OpportunityScore, ScanResult, ScannerConfig } from '../types'
 import { DEFAULT_SCANNER_CONFIG } from '../types'
 import {
-  calculateEMA, calculateMACD, calculateRSI, calculateBollingerBands,
+  calculateEMA, calculateBollingerBands,
   calculateATR, calculateADX, detectRegime
 } from '@/features/indicators/services/indicatorEngine'
+import {
+  precomputeIndicators,
+  buildContext,
+  generateAdaptiveComposite,
+} from '@/features/paper-trading/services/signalRegistry'
 import { runBacktest } from '@/features/backtesting/services/backtestEngine'
 import type { StrategyParameters } from '@/types/database'
 import { DEFAULT_STRATEGY_PARAMS } from '@/types/database'
 
 /**
- * Escanea un par + timeframe y genera oportunidad si hay señal válida.
- * Retorna null si no hay oportunidad (sin señal, mercado no apto, etc.)
+ * Escanea un par + timeframe usando el sistema completo de 7 senales.
+ * Retorna null si no hay oportunidad (sin senal, mercado no apto, etc.)
  */
 export function scanPair(
   candles: OHLCVCandle[],
@@ -19,75 +24,50 @@ export function scanPair(
   timeframe: Timeframe,
   params: StrategyParameters = DEFAULT_STRATEGY_PARAMS
 ): Opportunity | null {
-  if (candles.length < 100) return null // Need minimum data
+  if (candles.length < 100) return null
 
-  // Calculate all indicators
-  const emaFast = calculateEMA(candles, params.ema_fast)
-  const emaSlow = calculateEMA(candles, params.ema_slow)
-  const macd = calculateMACD(candles, params.macd_fast, params.macd_slow, params.macd_signal)
-  const rsi = calculateRSI(candles, params.rsi_period)
-  const bb = calculateBollingerBands(candles, params.bb_period, params.bb_std_dev)
-  const atr = calculateATR(candles, 14)
-  const adx = calculateADX(candles, 14)
+  // Pre-compute all indicators via signalRegistry (shared with paper trading)
+  const indicators = precomputeIndicators(candles, params)
 
-  // Need all indicators available for last candle
-  if (emaFast.length < 2 || emaSlow.length < 2 || macd.length < 1 ||
-      rsi.length < 1 || bb.length < 1 || atr.length < 1) return null
+  // Get last candle index
+  const lastIdx = candles.length - 1
+  const lastCandle = candles[lastIdx]
+
+  // Get prev EMA values for context (needed by buildContext)
+  const prevCandle = candles[lastIdx - 1]
+  const prevEmaFast = indicators.emaFastMap.get(prevCandle.timestamp) ?? 0
+  const prevEmaSlow = indicators.emaSlowMap.get(prevCandle.timestamp) ?? 0
+
+  // Build signal context for the last candle
+  const ctx = buildContext(candles, lastIdx, params, indicators, prevEmaFast, prevEmaSlow)
+  if (!ctx) return null
 
   // Detect regime
+  const emaFast = calculateEMA(candles, params.ema_fast)
+  const emaSlow = calculateEMA(candles, params.ema_slow)
+  const atr = calculateATR(candles, 14)
+  const adx = calculateADX(candles, 14)
   const regime = detectRegime(candles, adx, atr, emaFast, emaSlow)
 
   // Skip choppy and volatile markets
   if (regime.regime === 'choppy' || regime.regime === 'volatile') return null
 
-  // Get latest indicator values
-  const currentEmaFast = emaFast[emaFast.length - 1].value
-  const prevEmaFast = emaFast[emaFast.length - 2].value
-  const currentEmaSlow = emaSlow[emaSlow.length - 1].value
-  const prevEmaSlow = emaSlow[emaSlow.length - 2].value
-  const currentMACD = macd[macd.length - 1]
-  const currentRSI = rsi[rsi.length - 1].value
-  const currentBB = bb[bb.length - 1]
-  const currentATR = atr[atr.length - 1].value
-  const currentADX = adx.length > 0 ? adx[adx.length - 1] : null
-  const currentPrice = candles[candles.length - 1].close
+  // Add timeframe to context for timeframe-aware signals (e.g. RSI divergence)
+  ctx.timeframe = timeframe
 
-  // Check for EMA cross signal
-  const emaCrossUp = prevEmaFast <= prevEmaSlow && currentEmaFast > currentEmaSlow
-  const emaCrossDown = prevEmaFast >= prevEmaSlow && currentEmaFast < currentEmaSlow
+  // Generate composite signal from all 7 signal systems (regime-adaptive weights)
+  const composite = generateAdaptiveComposite(ctx)
 
-  let signal: 'buy' | 'sell' | null = null
+  // No signal — skip
+  if (composite.direction === 'neutral') return null
 
-  if (emaCrossUp) {
-    let confluence = 0
-    if (currentMACD.histogram > 0) confluence++
-    if (currentRSI < params.rsi_overbought) confluence++
-    if (confluence >= 1) signal = 'buy'
-  }
+  const signal: 'buy' | 'sell' = composite.direction === 'long' ? 'buy' : 'sell'
 
-  if (emaCrossDown) {
-    let confluence = 0
-    if (currentMACD.histogram < 0) confluence++
-    if (currentRSI > params.rsi_oversold) confluence++
-    if (confluence >= 1) signal = 'sell'
-  }
-
-  // Also check for strong momentum entries (no cross required if ADX > 30)
-  if (!signal && currentADX && currentADX.adx > 30) {
-    // Strong trend + RSI + MACD alignment
-    if (currentEmaFast > currentEmaSlow && currentMACD.histogram > 0 && currentRSI > 50 && currentRSI < params.rsi_overbought) {
-      signal = 'buy'
-    }
-    if (currentEmaFast < currentEmaSlow && currentMACD.histogram < 0 && currentRSI < 50 && currentRSI > params.rsi_oversold) {
-      signal = 'sell'
-    }
-  }
-
-  if (!signal) return null
-
-  // Calculate ATR-based stops
-  const slMultiplier = 1.5
-  const tpMultiplier = 2.5
+  // ATR-based stops using strategy params (not hardcoded)
+  const currentATR = ctx.atr
+  const currentPrice = ctx.price
+  const slMultiplier = params.stop_loss_pct
+  const tpMultiplier = params.take_profit_pct
   const stopDistance = currentATR * slMultiplier
   const profitDistance = currentATR * tpMultiplier
 
@@ -96,27 +76,37 @@ export function scanPair(
   const riskRewardRatio = profitDistance / stopDistance
 
   // Calculate BB position (0 = at lower band, 1 = at upper band)
-  const bbPosition = currentBB.bandwidth === 0 ? 0.5 :
-    (currentPrice - currentBB.lower) / (currentBB.upper - currentBB.lower)
+  const currentBB = ctx.bb
+  const bbPosition = currentBB
+    ? (currentBB.upper - currentBB.lower) === 0
+      ? 0.5
+      : (currentPrice - currentBB.lower) / (currentBB.upper - currentBB.lower)
+    : 0.5
 
-  // Calculate opportunity score
+  // Calculate opportunity score (now incorporating composite confidence)
+  const currentADX = ctx.adx
+  const currentRSI = ctx.rsi
+  const currentMACD = ctx.macd
+  const atrAvg = atr.slice(-50).reduce((s, a) => s + a.value, 0) / Math.min(50, atr.length)
+
   const score = calculateOpportunityScore({
     adx: currentADX?.adx ?? 0,
-    emaFast: currentEmaFast,
-    emaSlow: currentEmaSlow,
+    emaFast: ctx.emaFast,
+    emaSlow: ctx.emaSlow,
     rsi: currentRSI,
     macdHistogram: currentMACD.histogram,
     atr: currentATR,
-    atrAvg: atr.slice(-50).reduce((s, a) => s + a.value, 0) / Math.min(50, atr.length),
-    volume: candles[candles.length - 1].volume,
+    atrAvg,
+    volume: lastCandle.volume,
     volumeAvg: candles.slice(-20).reduce((s, c) => s + c.volume, 0) / Math.min(20, candles.length),
     bbPosition,
     riskRewardRatio,
     signal,
     regime,
+    compositeConfidence: composite.totalConfidence,
   })
 
-  // Quick backtest on recent data (last 200 candles) for validation
+  // Quick backtest on recent data (last 200 candles)
   let quickBacktest: Opportunity['quickBacktest'] = undefined
   const recentCandles = candles.slice(-200)
   if (recentCandles.length >= 100) {
@@ -140,22 +130,24 @@ export function scanPair(
     takeProfit,
     riskRewardRatio,
     atr: currentATR,
+    compositeConfidence: composite.totalConfidence,
+    activeSignals: composite.activeSystems,
     indicators: {
-      emaFast: currentEmaFast,
-      emaSlow: currentEmaSlow,
+      emaFast: ctx.emaFast,
+      emaSlow: ctx.emaSlow,
       rsi: currentRSI,
       macdHistogram: currentMACD.histogram,
       adx: currentADX?.adx ?? 0,
       bbPosition,
     },
     quickBacktest,
-    timestamp: candles[candles.length - 1].timestamp,
+    timestamp: lastCandle.timestamp,
   }
 }
 
 /**
  * Score de oportunidad (0-100).
- * Ponderación: trend 30%, momentum 25%, volatility 20%, volume 15%, R:R 10%
+ * Ponderacion: trend 25%, momentum 20%, volatility 15%, volume 10%, R:R 10%, confidence 20%
  */
 function calculateOpportunityScore(data: {
   adx: number
@@ -171,6 +163,7 @@ function calculateOpportunityScore(data: {
   riskRewardRatio: number
   signal: 'buy' | 'sell'
   regime: { regime: string; adx: number }
+  compositeConfidence: number
 }): OpportunityScore {
   // Trend score (0-100): ADX strength + EMA separation
   let trend = 0
@@ -180,21 +173,18 @@ function calculateOpportunityScore(data: {
   else if (data.adx > 20) trend = 40
   else trend = 20
 
-  // Bonus for EMA alignment with signal
   const emaSpread = Math.abs(data.emaFast - data.emaSlow) / data.emaSlow * 100
   if (emaSpread > 1) trend = Math.min(100, trend + 10)
 
   // Momentum score (0-100): RSI sweet spot + MACD strength
   let momentum = 0
   if (data.signal === 'buy') {
-    // Best buy: RSI 40-60 (room to grow, not oversold bounce)
     if (data.rsi >= 40 && data.rsi <= 60) momentum = 80
     else if (data.rsi >= 30 && data.rsi < 40) momentum = 60
     else if (data.rsi > 60 && data.rsi <= 70) momentum = 50
     else momentum = 20
     if (data.macdHistogram > 0) momentum = Math.min(100, momentum + 20)
   } else {
-    // Best sell: RSI 40-60 (room to fall)
     if (data.rsi >= 40 && data.rsi <= 60) momentum = 80
     else if (data.rsi > 60 && data.rsi <= 70) momentum = 60
     else if (data.rsi >= 30 && data.rsi < 40) momentum = 50
@@ -202,13 +192,13 @@ function calculateOpportunityScore(data: {
     if (data.macdHistogram < 0) momentum = Math.min(100, momentum + 20)
   }
 
-  // Volatility score (0-100): Goldilocks zone (not too high, not too low)
+  // Volatility score (0-100): Goldilocks zone
   let volatility = 0
   const atrRatio = data.atrAvg === 0 ? 1 : data.atr / data.atrAvg
-  if (atrRatio >= 0.8 && atrRatio <= 1.5) volatility = 100 // Sweet spot
-  else if (atrRatio >= 0.5 && atrRatio < 0.8) volatility = 60 // Low vol
-  else if (atrRatio > 1.5 && atrRatio <= 2.0) volatility = 50 // High vol
-  else volatility = 20 // Extreme
+  if (atrRatio >= 0.8 && atrRatio <= 1.5) volatility = 100
+  else if (atrRatio >= 0.5 && atrRatio < 0.8) volatility = 60
+  else if (atrRatio > 1.5 && atrRatio <= 2.0) volatility = 50
+  else volatility = 20
 
   // Volume score (0-100): Above average volume = confirmation
   let volume = 0
@@ -227,21 +217,22 @@ function calculateOpportunityScore(data: {
   else if (data.riskRewardRatio >= 1.5) riskReward = 40
   else riskReward = 20
 
-  // Weighted total
+  // Weighted total (now includes composite confidence as 20% weight)
+  const confidenceScore = Math.round(data.compositeConfidence * 100)
   const total = Math.round(
-    trend * 0.30 +
-    momentum * 0.25 +
-    volatility * 0.20 +
-    volume * 0.15 +
-    riskReward * 0.10
+    trend * 0.25 +
+    momentum * 0.20 +
+    volatility * 0.15 +
+    volume * 0.10 +
+    riskReward * 0.10 +
+    confidenceScore * 0.20
   )
 
   return { trend, momentum, volatility, volume, riskReward, total }
 }
 
 /**
- * Escanea múltiples pares × timeframes.
- * Requiere función para obtener candles de cada par.
+ * Escanea multiples pares x timeframes.
  */
 export async function scanMarket(
   getCandles: (symbol: string, timeframe: Timeframe) => Promise<OHLCVCandle[]>,
@@ -263,13 +254,11 @@ export async function scanMarket(
           opportunities.push(opportunity)
         }
       } catch {
-        // Skip pair/timeframe if fetch fails
         continue
       }
     }
   }
 
-  // Sort by score descending
   opportunities.sort((a, b) => b.score.total - a.score.total)
 
   return {
