@@ -226,9 +226,13 @@ export async function POST(req: NextRequest) {
         if (closed) {
           const entryPrice = Number(trade.entry_price)
           const qty = Number(trade.quantity)
-          const pnl = trade.type === 'buy'
+          // Simulate Binance commissions: 0.1% per side (entry + exit)
+          const entryCommission = entryPrice * qty * 0.001
+          const exitCommission = exitPrice * qty * 0.001
+          const rawPnl = trade.type === 'buy'
             ? (exitPrice - entryPrice) * qty
             : (entryPrice - exitPrice) * qty
+          const pnl = rawPnl - entryCommission - exitCommission
           const pnlPct = pnl / (entryPrice * qty)
 
           await supabase
