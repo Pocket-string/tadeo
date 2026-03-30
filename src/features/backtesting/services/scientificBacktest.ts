@@ -5,6 +5,7 @@ import type {
   MetricDegradation,
   MetricSemaphore,
   BacktestMetrics,
+  BacktestTradeResult,
   WalkForwardResult,
   WalkForwardWindow,
 } from '../types'
@@ -26,11 +27,23 @@ export function runScientificBacktest(
 
   const splitIndex = Math.floor(candles.length * splitRatio)
   const isCandles = candles.slice(0, splitIndex)
-  const oosCandles = candles.slice(splitIndex)
-  const splitDate = oosCandles[0].timestamp
+  const splitDate = candles[splitIndex].timestamp
+
+  // OOS warmup: include indicator warmup candles before the OOS period
+  // so indicators are fully initialized when OOS begins
+  const oosWarmup = Math.max(60, (params.ema_slow ?? 26) + 10)
+  const oosWarmupStart = Math.max(0, splitIndex - oosWarmup)
+  const oosWithWarmup = candles.slice(oosWarmupStart)
+  const pureOosCandles = candles.slice(splitIndex)
 
   const inSample = runBacktest(isCandles, params, initialCapital)
-  const outOfSample = runBacktest(oosCandles, params, initialCapital)
+  const oosFullResult = runBacktest(oosWithWarmup, params, initialCapital)
+
+  // Filter OOS trades to only count those within the actual OOS period
+  const oosTrades = oosFullResult.trades.filter(t => t.entryTime >= splitDate)
+  const oosMetrics = computeMetricsFromTrades(oosTrades, initialCapital)
+  const oosEquity = oosFullResult.equityCurve.filter(p => p.timestamp >= splitDate)
+  const outOfSample = { metrics: oosMetrics, trades: oosTrades, equityCurve: oosEquity }
   const combined = runBacktest(candles, params, initialCapital)
 
   const degradation = calculateDegradation(inSample.metrics, outOfSample.metrics)
@@ -70,27 +83,45 @@ export function runWalkForward(
 
   const windows: WalkForwardWindow[] = []
 
+  // Warmup: indicators need ~60 candles to fully initialize (EMA slow up to 50 + ADX 2×14+1)
+  // Include warmup candles before each test window so indicators produce valid signals
+  const warmupSize = Math.max(
+    60,
+    (params.ema_slow ?? 26) + 10,
+    ((params.rsi_period ?? 14) * 2) + 10
+  )
+
   for (let i = 0; i < windowCount; i++) {
     const start = i * windowSize
     const trainEnd = start + trainSize
     const testEnd = Math.min(trainEnd + testSize, candles.length)
 
     const trainCandles = candles.slice(start, trainEnd)
-    const testCandles = candles.slice(trainEnd, testEnd)
 
-    if (testCandles.length < 10) continue
+    // Include warmup candles from training set before test window
+    // so indicators are fully initialized when test period begins
+    const warmupStart = Math.max(0, trainEnd - warmupSize)
+    const testWithWarmup = candles.slice(warmupStart, testEnd)
+    const pureTestCandles = candles.slice(trainEnd, testEnd)
+
+    if (pureTestCandles.length < 10) continue
 
     const trainResult = runBacktest(trainCandles, params, initialCapital)
-    const testResult = runBacktest(testCandles, params, initialCapital)
+    const testFullResult = runBacktest(testWithWarmup, params, initialCapital)
+
+    // Filter test metrics to only count trades within the actual test period
+    const testStartTimestamp = pureTestCandles[0].timestamp
+    const testTrades = testFullResult.trades.filter(t => t.entryTime >= testStartTimestamp)
+    const testMetrics = computeMetricsFromTrades(testTrades, initialCapital)
 
     windows.push({
       windowIndex: i,
       trainStart: trainCandles[0].timestamp,
       trainEnd: trainCandles[trainCandles.length - 1].timestamp,
-      testStart: testCandles[0].timestamp,
-      testEnd: testCandles[testCandles.length - 1].timestamp,
+      testStart: pureTestCandles[0].timestamp,
+      testEnd: pureTestCandles[pureTestCandles.length - 1].timestamp,
       trainMetrics: trainResult.metrics,
-      testMetrics: testResult.metrics,
+      testMetrics,
     })
   }
 
@@ -99,6 +130,57 @@ export function runWalkForward(
   const consistency = windows.filter((w) => w.testMetrics.netProfit > 0).length / windows.length
 
   return { windows, aggregateTestMetrics, consistency }
+}
+
+function computeMetricsFromTrades(trades: BacktestTradeResult[], initialCapital: number): BacktestMetrics {
+  if (trades.length === 0) {
+    return {
+      totalTrades: 0, winningTrades: 0, losingTrades: 0, winRate: 0,
+      netProfit: 0, maxDrawdown: 0, sharpeRatio: 0, sortinoRatio: 0, tStatistic: 0, profitFactor: 0,
+    }
+  }
+
+  const winningTrades = trades.filter(t => t.pnl > 0)
+  const losingTrades = trades.filter(t => t.pnl <= 0)
+  const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0)
+  const grossProfit = winningTrades.reduce((sum, t) => sum + t.pnl, 0)
+  const grossLoss = Math.abs(losingTrades.reduce((sum, t) => sum + t.pnl, 0))
+
+  // Max drawdown from trade PnL series
+  let equity = initialCapital
+  let peak = initialCapital
+  let maxDrawdown = 0
+  for (const t of trades) {
+    equity += t.pnl
+    if (equity > peak) peak = equity
+    const dd = (peak - equity) / peak
+    if (dd > maxDrawdown) maxDrawdown = dd
+  }
+
+  const returns = trades.map(t => t.pnlPct)
+  const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length
+  const stdReturn = Math.sqrt(
+    returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length
+  )
+  const sharpeRatio = stdReturn === 0 ? 0 : (avgReturn / stdReturn) * Math.sqrt(252)
+  const downsideDev = Math.sqrt(
+    returns.reduce((s, r) => s + Math.min(0, r) ** 2, 0) / returns.length
+  )
+  const sortinoRatio = downsideDev > 0 ? (avgReturn / downsideDev) * Math.sqrt(252) : 0
+  const tStatistic = stdReturn === 0 ? 0 : (avgReturn / (stdReturn / Math.sqrt(trades.length)))
+
+  return {
+    totalTrades: trades.length,
+    winningTrades: winningTrades.length,
+    losingTrades: losingTrades.length,
+    winRate: winningTrades.length / trades.length,
+    netProfit: totalPnl,
+    maxDrawdown,
+    sharpeRatio,
+    sortinoRatio,
+    tStatistic,
+    profitFactor: grossLoss === 0 ? (grossProfit > 0 ? Infinity : 0) : grossProfit / grossLoss,
+  }
 }
 
 function calculateDegradation(is: BacktestMetrics, oos: BacktestMetrics): MetricDegradation {
