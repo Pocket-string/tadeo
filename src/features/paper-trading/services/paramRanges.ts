@@ -18,3 +18,30 @@ export const PARAM_RANGES = {
   stop_loss_pct: [0.5, 0.7, 0.8, 1.0, 1.2, 1.5],  // ATR multipliers (tighter)
   take_profit_pct: [2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0], // ATR multipliers (wider)
 } as const
+
+// ─── Signal System Weight Ranges ──────────────────────────────────────────────
+// Based on live trade performance data (234 trades, 2026-03-24 analysis):
+// - ema-cross:long WR 87.5% → proven, keep high
+// - bb-mean-rev:long 13W/0L → star signal
+// - adx-trend:short WR 7.1% → toxic
+// - double-pattern:short WR 33% → toxic
+// - rsi-divergence:long WR 25.8% → toxic
+export const SIGNAL_WEIGHT_RANGES: Record<string, readonly number[]> = {
+  'ema-cross':       [0.3, 0.5, 0.8, 1.0, 1.2, 1.5],
+  'bb-mean-rev':     [0.3, 0.5, 0.8, 1.0, 1.3, 1.5],
+  'adx-trend':       [0.2, 0.3, 0.5, 0.8, 1.0, 1.2],
+  'double-pattern':  [0.2, 0.3, 0.5, 0.8, 1.0],
+  'rsi-divergence':  [0.2, 0.3, 0.4, 0.5, 0.7, 1.0],
+  'volume-confirm':  [0.5, 0.8, 1.0, 1.2],
+  'engulfing-sr':    [0.3, 0.5, 0.8, 1.0, 1.3, 1.5],
+} as const
+
+// Trailing stop mode options
+export const TRAILING_STOP_MODES = ['atr', 'ema'] as const
+export const TRAILING_EMA_PERIODS = [10, 15, 20, 30, 40] as const
+
+// All 7 signal system IDs
+export const SIGNAL_IDS = [
+  'ema-cross', 'bb-mean-rev', 'adx-trend', 'double-pattern',
+  'rsi-divergence', 'volume-confirm', 'engulfing-sr',
+] as const

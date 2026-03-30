@@ -417,11 +417,22 @@ export async function simulateOnCandles(
 // ============================================================
 
 // PARAM_RANGES extracted to paramRanges.ts (cannot export objects from 'use server' files)
-import { PARAM_RANGES } from './paramRanges'
+import {
+  PARAM_RANGES,
+  SIGNAL_WEIGHT_RANGES,
+  SIGNAL_IDS,
+  TRAILING_STOP_MODES,
+  TRAILING_EMA_PERIODS,
+} from './paramRanges'
+
+function pick<T>(arr: readonly T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
 
 function mutateParams(base: StrategyParameters): StrategyParameters {
   const result = { ...base }
-  // Mutate 2-4 random parameters
+
+  // ─── Classic param mutations (2-4 params) ──────────────────────────────────
   const keys = Object.keys(PARAM_RANGES) as (keyof typeof PARAM_RANGES)[]
   const numMutations = 2 + Math.floor(Math.random() * 3)
   const toMutate = keys.sort(() => Math.random() - 0.5).slice(0, numMutations)
@@ -438,6 +449,52 @@ function mutateParams(base: StrategyParameters): StrategyParameters {
   // Ensure macd_fast < macd_slow
   if (result.macd_fast >= result.macd_slow) {
     result.macd_slow = result.macd_fast + 10
+  }
+
+  // ─── Signal system mutations (50% chance) ──────────────────────────────────
+  // This is where the real edge lives: weight + enable/disable toxic signals
+  if (Math.random() < 0.5) {
+    const systems = (result.signal_systems ?? SIGNAL_IDS.map(id => ({
+      id, weight: 1.0, enabled: true,
+    }))).map(s => ({ ...s }))
+
+    // Mutate 1-3 signal systems
+    const numSignalMutations = 1 + Math.floor(Math.random() * 3)
+    const toMutateSignals = [...SIGNAL_IDS].sort(() => Math.random() - 0.5).slice(0, numSignalMutations)
+
+    for (const signalId of toMutateSignals) {
+      const idx = systems.findIndex(s => s.id === signalId)
+      if (idx === -1) continue
+
+      const weights = SIGNAL_WEIGHT_RANGES[signalId]
+      if (weights) {
+        systems[idx].weight = pick(weights)
+      }
+      // 30% chance to toggle enabled/disabled
+      if (Math.random() < 0.3) {
+        systems[idx].enabled = !systems[idx].enabled
+      }
+    }
+
+    // Ensure at least 2 systems are enabled (need signal diversity)
+    const enabledCount = systems.filter(s => s.enabled).length
+    if (enabledCount < 2) {
+      // Force-enable the top 2 proven signals
+      const proven = systems.find(s => s.id === 'ema-cross')
+      const star = systems.find(s => s.id === 'bb-mean-rev')
+      if (proven) proven.enabled = true
+      if (star) star.enabled = true
+    }
+
+    result.signal_systems = systems
+  }
+
+  // ─── Trailing stop mode mutation (20% chance) ──────────────────────────────
+  if (Math.random() < 0.2) {
+    result.trailing_stop_mode = pick(TRAILING_STOP_MODES)
+    if (result.trailing_stop_mode === 'ema') {
+      result.trailing_ema_period = pick(TRAILING_EMA_PERIODS)
+    }
   }
 
   return result
