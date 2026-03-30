@@ -28,6 +28,7 @@ import type { RegimeResult } from '@/features/indicators/types'
 const ENTRY_SLIPPAGE = 0.0005   // 0.05% on entry fills
 const SL_SLIPPAGE = 0.001       // 0.1% on stop loss exits (worst case)
 const TP_SLIPPAGE = 0.0005      // 0.05% on take profit exits
+const COMMISSION_RATE = 0.001   // 0.1% per side (Binance spot with BNB discount)
 
 export interface SimTrade {
   type: 'buy' | 'sell'
@@ -256,9 +257,12 @@ export async function simulateOnCandles(
       }
 
       if (exitPrice !== null) {
-        const pnl = position.type === 'buy'
+        const rawPnl = position.type === 'buy'
           ? (exitPrice - position.entryPrice) * position.quantity
           : (position.entryPrice - exitPrice) * position.quantity
+        const entryComm = position.entryPrice * position.quantity * COMMISSION_RATE
+        const exitComm = exitPrice * position.quantity * COMMISSION_RATE
+        const pnl = rawPnl - entryComm - exitComm
         const pnlPct = pnl / (position.entryPrice * position.quantity)
 
         trades.push({
@@ -339,9 +343,12 @@ export async function simulateOnCandles(
   // Close open position at last candle
   if (position && candles.length > 0) {
     const last = candles[candles.length - 1]
-    const pnl = position.type === 'buy'
+    const rawPnl = position.type === 'buy'
       ? (last.close - position.entryPrice) * position.quantity
       : (position.entryPrice - last.close) * position.quantity
+    const entryComm = position.entryPrice * position.quantity * COMMISSION_RATE
+    const exitComm = last.close * position.quantity * COMMISSION_RATE
+    const pnl = rawPnl - entryComm - exitComm
     trades.push({
       type: position.type,
       entryTime: position.entryTime,

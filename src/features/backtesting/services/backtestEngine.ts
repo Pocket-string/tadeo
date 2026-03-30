@@ -10,6 +10,9 @@ import {
   type SignalSystemConfig,
 } from '@/features/paper-trading/services/signalRegistry'
 
+// Binance commission: 0.1% per side (entry + exit = 0.2% roundtrip)
+const COMMISSION_RATE = 0.001
+
 interface OpenPosition {
   type: SignalType
   entryTime: string
@@ -126,9 +129,12 @@ export function runBacktest(
     if (position) {
       const exitCheck = checkExit(position, candle)
       if (exitCheck) {
-        const pnl = position.type === 'buy'
+        const rawPnl = position.type === 'buy'
           ? (exitCheck.price - position.entryPrice) * position.quantity
           : (position.entryPrice - exitCheck.price) * position.quantity
+        const entryComm = position.entryPrice * position.quantity * COMMISSION_RATE
+        const exitComm = exitCheck.price * position.quantity * COMMISSION_RATE
+        const pnl = rawPnl - entryComm - exitComm
         const pnlPct = pnl / (position.entryPrice * position.quantity)
 
         trades.push({
@@ -211,9 +217,12 @@ export function runBacktest(
   // Cerrar posicion abierta al final del periodo
   if (position && candles.length > 0) {
     const lastCandle = candles[candles.length - 1]
-    const pnl = position.type === 'buy'
+    const rawPnl = position.type === 'buy'
       ? (lastCandle.close - position.entryPrice) * position.quantity
       : (position.entryPrice - lastCandle.close) * position.quantity
+    const entryComm = position.entryPrice * position.quantity * COMMISSION_RATE
+    const exitComm = lastCandle.close * position.quantity * COMMISSION_RATE
+    const pnl = rawPnl - entryComm - exitComm
 
     trades.push({
       entryTime: position.entryTime,
