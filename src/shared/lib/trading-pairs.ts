@@ -15,17 +15,22 @@ export interface PairConfig {
   riskTier: 'conservative' | 'moderate' | 'aggressive'
 }
 
+// Timeframes optimized by fee-to-reward ratio (2026-03-29 analysis)
+// With $100 capital and 0.1% Binance fees:
+//   15m: fee/reward > 18% for ALL pairs — INVIABLE
+//   1h:  fee/reward 8-10% for high-vol altcoins — viable
+//   4h:  fee/reward 3-6% for all pairs — sweet spot
 export const PAIR_CONFIG: Record<TradingPair, PairConfig> = {
-  BTCUSDT:  { tier: 'large', defaultTimeframe: '1h',  riskTier: 'moderate' },
-  ETHUSDT:  { tier: 'large', defaultTimeframe: '1h',  riskTier: 'moderate' },
-  SOLUSDT:  { tier: 'mid',   defaultTimeframe: '15m', riskTier: 'moderate' },
-  XRPUSDT:  { tier: 'mid',   defaultTimeframe: '15m', riskTier: 'conservative' },
-  BNBUSDT:  { tier: 'mid',   defaultTimeframe: '15m', riskTier: 'moderate' },
-  DOGEUSDT: { tier: 'small', defaultTimeframe: '15m', riskTier: 'conservative' },
-  ADAUSDT:  { tier: 'small', defaultTimeframe: '15m', riskTier: 'conservative' },
-  LINKUSDT: { tier: 'small', defaultTimeframe: '15m', riskTier: 'conservative' },
-  SUIUSDT:  { tier: 'small', defaultTimeframe: '15m', riskTier: 'conservative' },
-  AVAXUSDT: { tier: 'small', defaultTimeframe: '15m', riskTier: 'conservative' },
+  BTCUSDT:  { tier: 'large', defaultTimeframe: '4h',  riskTier: 'conservative' },
+  ETHUSDT:  { tier: 'large', defaultTimeframe: '4h',  riskTier: 'moderate' },
+  SOLUSDT:  { tier: 'mid',   defaultTimeframe: '1h',  riskTier: 'moderate' },
+  XRPUSDT:  { tier: 'mid',   defaultTimeframe: '4h',  riskTier: 'conservative' },
+  BNBUSDT:  { tier: 'mid',   defaultTimeframe: '4h',  riskTier: 'conservative' },
+  DOGEUSDT: { tier: 'small', defaultTimeframe: '1h',  riskTier: 'moderate' },
+  ADAUSDT:  { tier: 'small', defaultTimeframe: '1h',  riskTier: 'moderate' },
+  LINKUSDT: { tier: 'small', defaultTimeframe: '1h',  riskTier: 'moderate' },
+  SUIUSDT:  { tier: 'small', defaultTimeframe: '1h',  riskTier: 'conservative' },
+  AVAXUSDT: { tier: 'small', defaultTimeframe: '1h',  riskTier: 'moderate' },
 }
 
 /** Get the higher-timeframe used for trend bias, given a primary timeframe */
