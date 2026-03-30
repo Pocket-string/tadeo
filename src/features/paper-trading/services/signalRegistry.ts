@@ -123,6 +123,12 @@ export function generateComposite(
   const normalizedLong = longScore / normalizer
   const normalizedShort = shortScore / normalizer
 
+  // Conflict guard: contradictory signals cancel each other → return neutral
+  // Prevents trades like rsi-divergence:LONG(100%) + engulfing-sr:SHORT(70%) from generating a signal
+  if (normalizedLong > 0.3 && normalizedShort > 0.3) {
+    return { direction: 'neutral', totalConfidence: 0, activeSystems, atr: ctx.atr }
+  }
+
   let direction: 'long' | 'short' | 'neutral' = 'neutral'
   let totalConfidence = 0
 
@@ -260,8 +266,8 @@ const doublePatternSystem: SignalSystem = {
   },
 }
 
-/** Short timeframes where RSI divergence long signals are unreliable (2026-03-24: WR 25.8% on 5m/15m) */
-const SHORT_TIMEFRAMES = new Set(['1m', '3m', '5m', '15m', '30m'])
+/** Timeframes where RSI divergence long signals are unreliable (2026-03-30 Karpathy: 4/5 ADA 1h trades from rsi-div, noisy) */
+const SHORT_TIMEFRAMES = new Set(['1m', '3m', '5m', '15m', '30m', '1h'])
 
 /** System 5: RSI Divergence */
 const rsiDivergenceSystem: SignalSystem = {
@@ -349,26 +355,26 @@ registerSignal(engulfingSystem)
 
 // ─── Default Configurations ──────────────────────────────────────────────────
 
-/** Legacy config: original 3 systems with equal weights */
+/** Legacy config: original 3 systems — adx-trend disabled (2026-03-30 Karpathy: 7.1% WR toxic) */
 export const LEGACY_SIGNAL_CONFIG: SignalSystemConfig[] = [
   { id: 'ema-cross', weight: 1, enabled: true },
   { id: 'bb-mean-rev', weight: 1, enabled: true },
-  { id: 'adx-trend', weight: 1, enabled: true },
+  { id: 'adx-trend', weight: 0.3, enabled: false },    // TOXIC: 0W/3L live, disabled
   { id: 'double-pattern', weight: 0, enabled: false },
   { id: 'rsi-divergence', weight: 0, enabled: false },
   { id: 'volume-confirm', weight: 0, enabled: false },
   { id: 'engulfing-sr', weight: 0, enabled: false },
 ]
 
-/** Full config: all 7 systems with tuned weights (rebalanced 2026-03-24 based on 234 live trades) */
+/** Full config: all 7 systems with tuned weights (rebalanced 2026-03-30 Karpathy loop — disabled toxic signals) */
 export const FULL_SIGNAL_CONFIG: SignalSystemConfig[] = [
-  { id: 'ema-cross', weight: 1.2, enabled: true },      // ema-cross:long WR 87.5%
+  { id: 'ema-cross', weight: 1.2, enabled: true },       // ema-cross:long WR 87.5%
   { id: 'bb-mean-rev', weight: 1.5, enabled: true },     // bb-mean-rev:long 13W/0L — best signal
-  { id: 'adx-trend', weight: 0.5, enabled: true },       // adx-trend:short WR 7.1% — toxic, reduced
-  { id: 'double-pattern', weight: 0.5, enabled: true },  // double-pattern:short WR 33% — toxic, reduced
-  { id: 'rsi-divergence', weight: 0.4, enabled: true },  // rsi-divergence:long WR 25.8% — toxic, reduced
-  { id: 'volume-confirm', weight: 0.8, enabled: true },
-  { id: 'engulfing-sr', weight: 1.0, enabled: true },
+  { id: 'adx-trend', weight: 0.3, enabled: false },      // adx-trend:short WR 7.1% — TOXIC, 0W/3L live, DISABLED
+  { id: 'double-pattern', weight: 0.3, enabled: false },  // double-pattern:short WR 33% — TOXIC, DISABLED
+  { id: 'rsi-divergence', weight: 0.3, enabled: false },  // rsi-divergence:long WR 25.8% — TOXIC on 1h+, DISABLED
+  { id: 'volume-confirm', weight: 1.0, enabled: true },
+  { id: 'engulfing-sr', weight: 1.3, enabled: true },    // engulfing:long WR 100% — raised
 ]
 
 // ─── Strategy Presets (New Composite Strategies) ────────────────────────────
@@ -384,15 +390,15 @@ export const PATTERN_CONFLUENCE_CONFIG: SignalSystemConfig[] = [
   { id: 'engulfing-sr', weight: 1.5, enabled: true },    // raised — engulfing:long WR 100%
 ]
 
-/** Trend + Momentum: enter on trend confirmed by volume + momentum. Rebalanced — ema-cross leads. */
+/** Trend + Momentum: enter on trend confirmed by volume + momentum. 2026-03-30: toxic signals disabled. */
 export const TREND_MOMENTUM_CONFIG: SignalSystemConfig[] = [
   { id: 'ema-cross', weight: 1.3, enabled: true },       // raised — ema-cross:long WR 87.5%
   { id: 'bb-mean-rev', weight: 0.3, enabled: false },
-  { id: 'adx-trend', weight: 0.6, enabled: true },       // reduced from 1.2 — short side toxic
+  { id: 'adx-trend', weight: 0.3, enabled: false },      // TOXIC: disabled (was 0.6)
   { id: 'double-pattern', weight: 0.3, enabled: false },
-  { id: 'rsi-divergence', weight: 0.4, enabled: true },  // reduced from 0.7 — long side toxic
+  { id: 'rsi-divergence', weight: 0.3, enabled: false },  // TOXIC: disabled (was 0.4)
   { id: 'volume-confirm', weight: 1.0, enabled: true },
-  { id: 'engulfing-sr', weight: 0.3, enabled: false },
+  { id: 'engulfing-sr', weight: 1.0, enabled: true },    // enabled for confluence
 ]
 
 /** Mean Reversion Sniper: BB extremes + S/R + engulfing. Rebalanced — bb-mean-rev dominates. */
@@ -430,16 +436,16 @@ export const STRATEGY_PRESETS = {
 
 // ─── Regime-Adaptive Composite ──────────────────────────────────────────────
 
-/** Trending regime weights (rebalanced 2026-03-24 — reduced toxic signals) */
+/** Trending regime weights (2026-03-30 Karpathy — toxic signals zeroed) */
 const TRENDING_WEIGHTS: Record<string, number> = {
-  'ema-cross': 1.5, 'bb-mean-rev': 0.5, 'adx-trend': 0.7,
-  'double-pattern': 0.4, 'rsi-divergence': 0.4, 'volume-confirm': 0.8, 'engulfing-sr': 0.6,
+  'ema-cross': 1.5, 'bb-mean-rev': 0.5, 'adx-trend': 0,
+  'double-pattern': 0, 'rsi-divergence': 0, 'volume-confirm': 0.8, 'engulfing-sr': 1.0,
 }
 
-/** Ranging regime weights (rebalanced 2026-03-24 — bb-mean-rev dominates) */
+/** Ranging regime weights (2026-03-30 Karpathy — toxic signals zeroed, bb-mean-rev dominates) */
 const RANGING_WEIGHTS: Record<string, number> = {
-  'ema-cross': 0.3, 'bb-mean-rev': 1.5, 'adx-trend': 0.2,
-  'double-pattern': 0.5, 'rsi-divergence': 0.5, 'volume-confirm': 0.8, 'engulfing-sr': 1.2,
+  'ema-cross': 0.3, 'bb-mean-rev': 1.5, 'adx-trend': 0,
+  'double-pattern': 0, 'rsi-divergence': 0, 'volume-confirm': 0.8, 'engulfing-sr': 1.2,
 }
 
 /**
