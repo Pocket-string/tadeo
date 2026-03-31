@@ -530,16 +530,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Log all agent decisions to paper_agent_log (non-blocking, with error logging)
-  const logsToInsert = results.map(r => ({
-    session_id: r.sessionId,
-    symbol: r.symbol,
-    timeframe: r.timeframe,
-    event_type: r.action,
-    reason: r.reason,
-    price: r.price ?? null,
-    pnl: r.pnl ?? null,
-  }))
+  // Log only actionable decisions to paper_agent_log (skip no_signal/hold/cooldown to reduce IO)
+  // These noise events are still returned in the HTTP response for the UI panel
+  const IO_HEAVY_EVENTS = new Set(['no_signal', 'hold', 'cooldown'])
+  const logsToInsert = results
+    .filter(r => !IO_HEAVY_EVENTS.has(r.action))
+    .map(r => ({
+      session_id: r.sessionId,
+      symbol: r.symbol,
+      timeframe: r.timeframe,
+      event_type: r.action,
+      reason: r.reason,
+      price: r.price ?? null,
+      pnl: r.pnl ?? null,
+    }))
   if (logsToInsert.length > 0) {
     supabase.from('paper_agent_log').insert(logsToInsert)
       .then(({ error }) => { if (error) console.error('Agent log insert failed:', error.message) })
