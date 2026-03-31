@@ -331,12 +331,12 @@ export async function POST(req: NextRequest) {
         }
         const effectiveATR = entryATR ?? currentATR ?? 0
 
-        // Breakeven: move SL to entry once price advances 0.5x entry_atr
+        // Breakeven at 1.0× ATR (was 0.5×) — confirm real trend before moving SL to entry
         if (currentATR && !tradeMeta.breakeven_hit) {
           const entryPrice = Number(trade.entry_price)
           const beActivation = trade.type === 'buy'
-            ? entryPrice + effectiveATR * 0.5
-            : entryPrice - effectiveATR * 0.5
+            ? entryPrice + effectiveATR * 1.0
+            : entryPrice - effectiveATR * 1.0
           const shouldActivateBE = trade.type === 'buy'
             ? price >= beActivation
             : price <= beActivation
@@ -372,20 +372,22 @@ export async function POST(req: NextRequest) {
               : (entryPrice - price) / range
             const clampedProgress = Math.max(0, Math.min(progress, 1.5))
 
+            // Profit-lock scales slower to let winners run (Karpathy 2026-03-31)
             let lockPct: number
-            if (clampedProgress < 0.15) lockPct = 0
-            else if (clampedProgress < 0.4) lockPct = 0.3
-            else if (clampedProgress < 0.7) lockPct = 0.5
-            else lockPct = 0.7
+            if (clampedProgress < 0.30) lockPct = 0
+            else if (clampedProgress < 0.60) lockPct = 0.20
+            else if (clampedProgress < 0.85) lockPct = 0.40
+            else lockPct = 0.60
 
             const unrealizedProfit = trade.type === 'buy'
               ? price - entryPrice : entryPrice - price
             const profitLockSL = trade.type === 'buy'
               ? entryPrice + lockPct * unrealizedProfit
               : entryPrice - lockPct * unrealizedProfit
+            // Trail at 1.0× ATR (was 0.4×) — give price room for normal retracements
             const tightTrailSL = trade.type === 'buy'
-              ? price - currentATR * 0.4
-              : price + currentATR * 0.4
+              ? price - currentATR * 1.0
+              : price + currentATR * 1.0
 
             const newSL = trade.type === 'buy'
               ? Math.max(profitLockSL, tightTrailSL, entryPrice)
