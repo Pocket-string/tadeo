@@ -89,9 +89,17 @@ export interface SignalSystemConfig {
  * Generate a composite signal from multiple signal systems.
  * Aggregates weighted confidence scores and returns direction + total confidence.
  */
+export interface CompositeOptions {
+  /** Minimum normalized score to generate a signal (default: 0.45) */
+  compositeThreshold?: number
+  /** If both directions exceed this, return neutral (default: 0.3) */
+  conflictThreshold?: number
+}
+
 export function generateComposite(
   ctx: SignalContext,
-  systemConfigs: SignalSystemConfig[]
+  systemConfigs: SignalSystemConfig[],
+  options?: CompositeOptions
 ): CompositeSignal {
   let longScore = 0
   let shortScore = 0
@@ -106,6 +114,7 @@ export function generateComposite(
 
     const output = system.generate(ctx)
     if (output.signal === 'neutral') continue
+    if (output.confidence < 0.50) continue // Skip weak signals that add noise (Karpathy 2026-03-31)
 
     const weightedConfidence = output.confidence * config.weight
     totalWeight += config.weight
@@ -124,18 +133,19 @@ export function generateComposite(
   const normalizedShort = shortScore / normalizer
 
   // Conflict guard: contradictory signals cancel each other → return neutral
-  // Prevents trades like rsi-divergence:LONG(100%) + engulfing-sr:SHORT(70%) from generating a signal
-  if (normalizedLong > 0.3 && normalizedShort > 0.3) {
+  const conflictTh = options?.conflictThreshold ?? 0.3
+  if (normalizedLong > conflictTh && normalizedShort > conflictTh) {
     return { direction: 'neutral', totalConfidence: 0, activeSystems, atr: ctx.atr }
   }
 
+  const threshold = options?.compositeThreshold ?? 0.45
   let direction: 'long' | 'short' | 'neutral' = 'neutral'
   let totalConfidence = 0
 
-  if (normalizedLong > normalizedShort && normalizedLong > 0.45) {
+  if (normalizedLong > normalizedShort && normalizedLong > threshold) {
     direction = 'long'
     totalConfidence = normalizedLong
-  } else if (normalizedShort > normalizedLong && normalizedShort > 0.45) {
+  } else if (normalizedShort > normalizedLong && normalizedShort > threshold) {
     direction = 'short'
     totalConfidence = normalizedShort
   }
@@ -159,13 +169,14 @@ const emaCrossSystem: SignalSystem = {
         return { signal: 'long', confidence: 0.5 + conf * 0.15, metadata: { cross: 'bullish', conf } }
       }
     }
-    // Bearish cross
+    // Bearish cross — 0.7x penalty (Karpathy 2026-03-31: 0/7 WR on shorts vs 6/9 WR on longs)
     if (ctx.prevEmaFast >= ctx.prevEmaSlow && ctx.emaFast < ctx.emaSlow) {
       let conf = 0
       if (ctx.macd.histogram < 0) conf++
       if (ctx.rsi > ctx.params.rsi_oversold) conf++
       if (conf >= 1) {
-        return { signal: 'short', confidence: 0.5 + conf * 0.15, metadata: { cross: 'bearish', conf } }
+        const shortPenalty = 0.7
+        return { signal: 'short', confidence: (0.5 + conf * 0.15) * shortPenalty, metadata: { cross: 'bearish', conf, penalty: shortPenalty } }
       }
     }
     return { signal: 'neutral', confidence: 0, metadata: {} }

@@ -783,7 +783,10 @@ async function checkSignalFull(
   if (isVolatile) return { signal: null, rejectionReason: `volatile:ATR=${ctx.atr.toFixed(4)}>3x(${atrAvg.toFixed(4)})` }
 
   const composite = params.signal_systems
-    ? generateComposite(ctx, params.signal_systems as SignalSystemConfig[])
+    ? generateComposite(ctx, params.signal_systems as SignalSystemConfig[], {
+        compositeThreshold: params.composite_threshold,
+        conflictThreshold: params.conflict_threshold,
+      })
     : generateAdaptiveComposite(ctx)
 
   if (composite.direction === 'neutral') {

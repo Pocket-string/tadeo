@@ -120,6 +120,10 @@ export interface StrategyParameters {
   trailing_stop_mode?: 'atr' | 'ema'
   /** EMA period for trailing stop when mode is 'ema' (default: 20) */
   trailing_ema_period?: number
+  /** Composite signal threshold: minimum normalized score to generate a signal (default: 0.45, lower = more signals) */
+  composite_threshold?: number
+  /** Conflict threshold: if both long and short exceed this, return neutral (default: 0.3) */
+  conflict_threshold?: number
 }
 
 // ============================================

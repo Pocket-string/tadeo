@@ -716,7 +716,10 @@ async function checkSignalFull(
 
   // Use strategy's signal_systems config if set; otherwise use adaptive composite
   const composite = params.signal_systems
-    ? generateComposite(ctx, params.signal_systems as SignalSystemConfig[])
+    ? generateComposite(ctx, params.signal_systems as SignalSystemConfig[], {
+        compositeThreshold: params.composite_threshold,
+        conflictThreshold: params.conflict_threshold,
+      })
     : generateAdaptiveComposite(ctx)
 
   if (composite.direction === 'neutral') {
