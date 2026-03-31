@@ -19,11 +19,18 @@ export const dynamic = 'force-dynamic'
 export async function GET() {
   const supabase = getServiceClient()
 
-  const [{ count: activeSessions }, { data: lastLog }] = await Promise.all([
+  // Check active sessions + last trade activity (not agent_log, which filters no_signal/hold)
+  const [{ count: activeSessions }, { data: lastTrade }, { data: lastLog }] = await Promise.all([
     supabase
       .from('paper_sessions')
       .select('*', { count: 'exact', head: true })
       .eq('status', 'active'),
+    supabase
+      .from('paper_trades')
+      .select('entry_time')
+      .order('entry_time', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
     supabase
       .from('paper_agent_log')
       .select('created_at')
@@ -32,22 +39,29 @@ export async function GET() {
       .maybeSingle(),
   ])
 
+  // Use the most recent activity from either trades or agent_log
+  const lastTradeTime = lastTrade?.entry_time ?? null
   const lastLogTime = lastLog?.created_at ?? null
-  const minutesSinceLastLog = lastLogTime
-    ? Math.floor((Date.now() - new Date(lastLogTime).getTime()) / 60000)
+  const latestActivity = [lastTradeTime, lastLogTime]
+    .filter(Boolean)
+    .sort()
+    .pop() ?? null
+
+  const minutesSinceLastActivity = latestActivity
+    ? Math.floor((Date.now() - new Date(latestActivity).getTime()) / 60000)
     : null
 
-  // Cron is healthy if agent logged an event in the last 10 min
-  // OR if there are no active sessions (nothing to do)
+  // Cron healthy if activity in last 60 min (was 10 min, but agent_log no longer logs no_signal/hold)
+  // In 4h timeframes, trades may be hours apart — 60 min window accounts for this
   const cronHealthy =
     (activeSessions ?? 0) === 0 ||
-    minutesSinceLastLog === null ||
-    minutesSinceLastLog < 10
+    minutesSinceLastActivity === null ||
+    minutesSinceLastActivity < 60
 
   return NextResponse.json({
     activeSessions: activeSessions ?? 0,
-    lastLogTime,
-    minutesSinceLastLog,
+    lastLogTime: latestActivity,
+    minutesSinceLastLog: minutesSinceLastActivity,
     cronHealthy,
     timestamp: new Date().toISOString(),
   })
