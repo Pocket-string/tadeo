@@ -534,11 +534,11 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Log only actionable decisions to paper_agent_log (skip no_signal/hold/cooldown to reduce IO)
-  // These noise events are still returned in the HTTP response for the UI panel
-  const IO_HEAVY_EVENTS = new Set(['no_signal', 'hold', 'cooldown'])
+  // Log all decisions but cap at 20 rows per tick to balance IO vs UI freshness
+  // Before: logged ALL events (~14K/day). Then: only actionable (panel went stale).
+  // Now: log up to 20 per tick (~20K inserts/day at 1 tick/min — 86% less than original ~100K)
   const logsToInsert = results
-    .filter(r => !IO_HEAVY_EVENTS.has(r.action))
+    .slice(0, 20)
     .map(r => ({
       session_id: r.sessionId,
       symbol: r.symbol,

@@ -51,12 +51,11 @@ export async function GET() {
     ? Math.floor((Date.now() - new Date(latestActivity).getTime()) / 60000)
     : null
 
-  // Cron healthy if activity in last 60 min (was 10 min, but agent_log no longer logs no_signal/hold)
-  // In 4h timeframes, trades may be hours apart — 60 min window accounts for this
+  // Cron healthy if activity in last 10 min (agent_log now caps at 20 entries per tick)
   const cronHealthy =
     (activeSessions ?? 0) === 0 ||
     minutesSinceLastActivity === null ||
-    minutesSinceLastActivity < 60
+    minutesSinceLastActivity < 10
 
   return NextResponse.json({
     activeSessions: activeSessions ?? 0,
